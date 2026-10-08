@@ -1,5 +1,5 @@
 import { it, expect } from "vite-plus/test";
-import { readBody, PayloadTooLarge } from "../src/body";
+import { readBody, PayloadTooLarge } from "../../src/http/body";
 it("bounds actual streamed upload bytes even if Content-Length is absent", async () => {
   await expect(
     readBody(

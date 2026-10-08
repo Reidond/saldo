@@ -704,3 +704,96 @@ describe("POST /api/chat", () => {
     expect(await body(response)).toEqual({ error: genericMessage });
   });
 });
+
+describe("GET /api/me and Access login", () => {
+  const users = () =>
+    d1.db
+      .prepare(
+        "SELECT u.id, u.account_id, u.role, u.status, u.email, u.display_name, i.provider, i.issuer, i.subject FROM users u JOIN user_identities i ON i.user_id = u.id",
+      )
+      .all();
+
+  it("provisions the owner on the first API request and returns them", async () => {
+    const response = await call("/api/me");
+    expect(response.status).toBe(200);
+    expectJsonHeaders(response);
+    const { user } = await body(response);
+    expect(user).toEqual({
+      id: expect.stringMatching(/^[0-9a-f-]{36}$/),
+      email: "owner@example.test",
+      displayName: null,
+      role: "owner",
+    });
+    expect((await users()).results).toEqual([
+      {
+        id: user.id,
+        account_id: accessSettings.ownerSubject,
+        role: "owner",
+        status: "active",
+        email: "owner@example.test",
+        display_name: null,
+        provider: "cloudflare_access",
+        issuer: accessSettings.issuer,
+        subject: accessSettings.ownerSubject,
+      },
+    ]);
+    const audit = await d1.db
+      .prepare("SELECT action, actor_user_id FROM audit_events")
+      .all();
+    expect(audit.results).toEqual([
+      { action: "identity.linked", actor_user_id: user.id },
+    ]);
+    expect(await body(await call("/api/me"))).toEqual({ user });
+    expect((await users()).results).toHaveLength(1);
+  });
+
+  it("does not create users for status checks or assets", async () => {
+    await call("/api/status");
+    await call("/");
+    expect((await users()).results).toEqual([]);
+  });
+
+  it("keeps the profile in step with the signed token", async () => {
+    await call("/api/me");
+    const renamed = await keys.sign({
+      email: "renamed@example.test",
+      name: "Synthetic Owner",
+    });
+    expect(
+      (await body(await call("/api/me", { token: renamed }))).user,
+    ).toMatchObject({
+      email: "renamed@example.test",
+      displayName: "Synthetic Owner",
+    });
+    expect((await users()).results).toMatchObject([
+      { email: "renamed@example.test", display_name: "Synthetic Owner" },
+    ]);
+  });
+
+  it("rejects disabled users and tokens issued before a sign-out", async () => {
+    await call("/api/me");
+    const now = Math.floor(Date.now() / 1000);
+    await d1.db
+      .prepare("UPDATE users SET sessions_valid_after = ?")
+      .bind(now + 60)
+      .run();
+    let response = await call("/api/subscriptions");
+    expect(response.status).toBe(401);
+    expect(await body(response)).toEqual({ error: privateMessage });
+    await d1.db
+      .prepare("UPDATE users SET sessions_valid_after = 0, status = 'disabled'")
+      .run();
+    response = await call("/api/subscriptions");
+    expect(response.status).toBe(403);
+    expectJsonHeaders(response);
+    expect(await body(response)).toEqual({
+      error: "This Saldo instance is private.",
+    });
+  });
+
+  it("answers 401 without a token and 404 for other methods", async () => {
+    expect((await call("/api/me", { token: null })).status).toBe(401);
+    expect((await call("/api/me", { method: "POST" })).status).toBe(404);
+    expect((await call("/api/me", { method: "HEAD" })).status).toBe(404);
+  });
+});

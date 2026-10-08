@@ -11,7 +11,10 @@
   },
   "dependencies": {
     "@saldo/domain": "workspace:*",
+    "@sinclair/typebox": "catalog:",
+    "elysia": "catalog:",
     "jose": "catalog:",
+    "openapi-types": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
