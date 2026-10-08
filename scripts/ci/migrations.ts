@@ -1,3 +1,4 @@
+import { realpathSync } from "node:fs";
 import { lstat, readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { URL, fileURLToPath } from "node:url";
@@ -374,9 +375,12 @@ async function main() {
   );
 }
 
+// Compare real paths: a symlinked checkout or temp directory (such as macOS
+// /var -> /private/var) must not silently skip the check and exit 0.
 if (
   process.argv[1] &&
-  resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+  realpathSync(resolve(process.argv[1])) ===
+    realpathSync(fileURLToPath(import.meta.url))
 ) {
   main().catch((error) => {
     console.error(errorMessage(error));
