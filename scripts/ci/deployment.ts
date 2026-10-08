@@ -257,24 +257,50 @@ function context() {
     throw new Error("Required protected environment configuration is missing");
   return { account, database, token, temp, root: process.cwd() };
 }
-async function api(path: string) {
+export const apiOperations = {
+  "app-settings": "app Worker settings read",
+  "app-private-endpoints": "app private-endpoint settings read",
+  "bridge-settings": "bridge Worker settings read",
+  "bridge-private-endpoints": "bridge private-endpoint settings read",
+  "d1-recovery": "D1 recovery-bookmark read",
+} as const;
+type ApiOperation = keyof typeof apiOperations;
+export async function api(
+  path: string,
+  operation: ApiOperation,
+  fetcher: typeof fetch = fetch,
+) {
   const c = context();
-  const r = await fetch(
-    `https://api.cloudflare.com/client/v4/accounts/${c.account}/${path}`,
-    {
-      headers: { Authorization: `Bearer ${c.token}` },
-      redirect: "error",
-      signal: AbortSignal.timeout(30000),
-    },
-  );
-  if (!r.ok)
-    throw new Error(
-      `Cloudflare preflight API failed (${r.status}); do not broaden token permissions automatically`,
+  const label = apiOperations[operation] ?? "preflight read";
+  const failure = (detail: string) =>
+    new Error(
+      `Cloudflare ${label} failed (${detail}); deployment stopped. Do not broaden token permissions automatically.`,
     );
-  const body = (await r.json()) as { success?: boolean; result?: unknown };
-  if (body.success !== true) throw new Error("Cloudflare API operation failed");
+  let r: Response;
+  try {
+    r = await fetcher(
+      `https://api.cloudflare.com/client/v4/accounts/${c.account}/${path}`,
+      {
+        headers: { Authorization: `Bearer ${c.token}` },
+        redirect: "error",
+        signal: AbortSignal.timeout(30000),
+      },
+    );
+  } catch {
+    throw failure("request error");
+  }
+  if (!r.ok) throw failure(`HTTP ${r.status}`);
+  let body: { success?: boolean; result?: unknown };
+  try {
+    body = (await r.json()) as typeof body;
+  } catch {
+    throw failure("invalid response");
+  }
+  if (!body || body.success !== true)
+    throw failure(`HTTP ${r.status}, unsuccessful response`);
   return body.result;
 }
+
 function privateWrite(path: string, value: unknown) {
   writeFileSync(path, JSON.stringify(value), { mode: 0o600 });
 }
@@ -285,8 +311,18 @@ function mask(value: unknown) {
     );
 }
 async function inspect(name: "saldo" | "saldo-ai-bridge") {
-  const settings = parseSettings(await api(`workers/scripts/${name}/settings`));
-  validatePrivateEndpoints(await api(`workers/scripts/${name}/subdomain`));
+  const settings = parseSettings(
+    await api(
+      `workers/scripts/${name}/settings`,
+      name === "saldo" ? "app-settings" : "bridge-settings",
+    ),
+  );
+  validatePrivateEndpoints(
+    await api(
+      `workers/scripts/${name}/subdomain`,
+      name === "saldo" ? "app-private-endpoints" : "bridge-private-endpoints",
+    ),
+  );
   return settings;
 }
 export async function prepare() {
@@ -302,6 +338,7 @@ export async function prepare() {
   validateBridge(bridge);
   const recovery = (await api(
     `d1/database/${c.database}/time_travel/bookmark`,
+    "d1-recovery",
   )) as { bookmark?: unknown };
   if (typeof recovery.bookmark !== "string" || !recovery.bookmark)
     throw new Error("No verified D1 recovery point; migrations blocked");
