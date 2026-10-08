@@ -4,8 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev --config wrangler.jsonc",
-    "db:migrate": "wrangler d1 migrations apply saldo --local --config wrangler.jsonc",
+    "dev": "cf dev",
+    "build": "cf build",
+    "deploy:check": "cf deploy --dry-run --prebuilt --mode production",
+    "db:migrate": "cf d1 migrations apply 00000000-0000-4000-8000-000000000000 --local --persist-to .cloudflare/state --dir migrations",
+    "types": "cf workers types",
     "test": "vp test",
     "typecheck": "tsc --noEmit"
   },
@@ -18,10 +21,12 @@
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@cloudflare/vite-plugin": "catalog:",
     "@cloudflare/workers-types": "catalog:",
     "@types/node": "catalog:",
+    "cf": "catalog:",
+    "miniflare": "catalog:",
     "typescript": "catalog:",
-    "vite-plus": "catalog:",
-    "wrangler": "catalog:"
+    "vite-plus": "catalog:"
   }
 }

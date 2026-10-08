@@ -3,11 +3,5 @@
   "compilerOptions": {
     "types": ["node"]
   },
-  "include": [
-    "tests",
-    "scripts",
-    "deployment/*.ts",
-    "cloudflare.config.ts",
-    "vite.config.ts"
-  ]
+  "include": ["tests", "scripts", "cloudflare.config.ts", "vite.config.ts"]
 }

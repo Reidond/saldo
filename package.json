@@ -14,16 +14,12 @@
     "typecheck": "vp run -r typecheck && tsc --noEmit",
     "check": "vp check && vp run typecheck && vp test && vp run build",
     "db:migrate": "vp run --filter @saldo/api db:migrate",
-    "cf:build:app": "vp run --filter @saldo/web build && pnpm --filter @saldo/deployment exec cf build --mode app",
-    "cf:build:bridge": "vp run --filter @saldo/bridge typecheck && pnpm --filter @saldo/deployment exec cf build --mode bridge",
-    "cf:check:app": "vp run cf:build:app && pnpm --filter @saldo/deployment exec cf deploy --dry-run --prebuilt --mode app",
-    "cf:check:bridge": "vp run cf:build:bridge && pnpm --filter @saldo/deployment exec cf deploy --dry-run --prebuilt --mode bridge --containers-rollout none"
+    "deploy:check": "vp run -r deploy:check"
   },
   "devDependencies": {
     "@types/node": "catalog:",
     "typescript": "catalog:",
-    "vite-plus": "catalog:",
-    "wrangler": "catalog:"
+    "vite-plus": "catalog:"
   },
   "packageManager": "pnpm@12.9.1"
 }

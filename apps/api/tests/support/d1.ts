@@ -1,13 +1,5 @@
-import {
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { getPlatformProxy } from "wrangler";
+import { readdirSync, readFileSync } from "node:fs";
+import { Miniflare } from "miniflare";
 
 const migrations = new URL("../../migrations/", import.meta.url);
 
@@ -32,32 +24,29 @@ export interface LocalD1 {
 }
 
 /**
- * Starts a real local D1 (workerd through Wrangler's platform proxy) with
- * every migration in apps/api/migrations applied. Nothing is persisted.
+ * Starts a real local D1 (workerd through Miniflare, the runtime under cf and
+ * the Cloudflare Vite plugin) with every migration in apps/api/migrations
+ * applied. Nothing is persisted.
  */
 export async function startLocalD1(): Promise<LocalD1> {
-  const directory = mkdtempSync(join(tmpdir(), "saldo-d1-"));
-  const configPath = join(directory, "wrangler.json");
-  writeFileSync(
-    configPath,
-    JSON.stringify({
-      name: "saldo-test",
-      compatibility_date: "2026-10-01",
-      send_metrics: false,
-      d1_databases: [
-        {
-          binding: "DB",
-          database_name: "saldo-test",
-          database_id: "saldo-test",
+  const miniflare = new Miniflare({
+    workers: [
+      {
+        config: {
+          name: "saldo-test",
+          compatibilityDate: "2026-10-01",
+          manifest: {
+            mainModule: "index.mjs",
+            modules: {
+              "index.mjs": { type: "esm", contents: "export default {};" },
+            },
+          },
+          env: { DB: { type: "d1", id: "saldo-test" } },
         },
-      ],
-    }),
-  );
-  const proxy = await getPlatformProxy<{ DB: D1Database }>({
-    configPath,
-    persist: false,
+      },
+    ],
   });
-  const db = proxy.env.DB;
+  const db = (await miniflare.getD1Database("DB")) as unknown as D1Database;
   for (const file of readdirSync(migrations)
     .filter((name) => name.endsWith(".sql"))
     .sort())
@@ -81,8 +70,7 @@ export async function startLocalD1(): Promise<LocalD1> {
       await db.batch(tables.map((name) => db.prepare(`DELETE FROM ${name}`)));
     },
     async dispose() {
-      await proxy.dispose();
-      rmSync(directory, { recursive: true, force: true });
+      await miniflare.dispose();
     },
   };
 }
