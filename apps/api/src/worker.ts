@@ -1,4 +1,4 @@
-// Composition root of the app Worker: the only module that reads bindings
+// Composition root of the API Worker: the only module that reads bindings
 // and wires adapters, repositories and services into the HTTP layer.
 import { createApp } from "./http/app";
 import type { RequestScope } from "./http/context";
@@ -12,8 +12,6 @@ import { createServices } from "./services";
 export interface Env {
   DB: D1Database;
   FILES: R2Bucket;
-  /** The protected web build (apps/web/dist). */
-  ASSETS: Fetcher;
   /** Private AI bridge service binding; without it AI is unavailable. */
   AI?: Fetcher;
   AI_BRIDGE_SECRET?: string;
@@ -43,7 +41,6 @@ export function createScope(env: Env): RequestScope {
       },
     }),
     appOrigin: env.APP_ORIGIN,
-    assets: env.ASSETS,
   };
 }
 

@@ -63,16 +63,13 @@ function fakeServices() {
 }
 
 let services: ReturnType<typeof fakeServices>;
-let assets: { fetch: ReturnType<typeof vi.fn> };
 let app: ReturnType<typeof createApp>;
 
 beforeEach(() => {
   services = fakeServices();
-  assets = { fetch: vi.fn(async () => new Response("asset")) };
   const scope = {
     services: services as unknown as Services,
     appOrigin: origin,
-    assets,
   } as RequestScope;
   app = createApp(() => scope);
 });
@@ -118,11 +115,13 @@ describe("guards", () => {
     expect(services.subscriptions.create).not.toHaveBeenCalled();
   });
 
-  it("serves assets to the owner without touching account data", async () => {
-    expect(await (await request("/")).text()).toBe("asset");
+  it("answers 404 outside /api/ without touching account data", async () => {
+    expect(await read(await request("/"))).toEqual([
+      404,
+      { error: "Not found" },
+    ]);
     expect(services.identity.resolveActor).not.toHaveBeenCalled();
     expect((await request("/", { token: null })).status).toBe(401);
-    expect(assets.fetch).toHaveBeenCalledTimes(1);
   });
 
   it("maps identity outcomes to 401 and 403", async () => {
