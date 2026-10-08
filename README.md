@@ -42,3 +42,7 @@ This repository includes no tokens, account IDs, real subscriptions, imported sc
 ## Cloudflare `cf` CLI
 
 Use the isolated `deployment/` package to retain the protected Worker while Vite builds the frontend. Run `npm run cf:setup`, then `npm run cf:build:app`; the bridge build also requires Docker. See [the cf deployment guide](docs/CF-DEPLOYMENT.md) for verified behavior, private configuration, legacy Wrangler support and pending deployment checks. Do not run `cf init` in the root or bridge source directory.
+
+## Continuous delivery
+
+[GitHub Actions delivery](docs/GITHUB-DEPLOYMENT.md) checks PRs without production secrets and deploys the private bridge and app after successful main-branch checks. The protected `saldo-production` Environment holds the owner-supplied token and resource identifiers. Database changes are additive-only and preceded by a verified D1 recovery point; existing Access settings, secrets and domain routing are preserved.

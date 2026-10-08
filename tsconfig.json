@@ -18,6 +18,7 @@
     "vite.config.ts",
     "bridge",
     "cloudflare.config.ts",
-    "deployment/*.ts"
+    "deployment/*.ts",
+    "scripts"
   ]
 }
