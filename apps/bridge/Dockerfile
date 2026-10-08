@@ -1,17 +1,18 @@
 FROM node:24-bookworm-slim AS build
 WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci --ignore-scripts
-COPY src/domain.ts ./src/domain.ts
-COPY bridge ./bridge
-RUN ./node_modules/.bin/tsc -p bridge/tsconfig.node.json && npm prune --omit=dev --ignore-scripts
+RUN corepack enable pnpm
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
+COPY apps/bridge/package.json ./apps/bridge/package.json
+COPY packages/domain/package.json ./packages/domain/package.json
+RUN pnpm install --frozen-lockfile --ignore-scripts --filter "@saldo/bridge..."
+COPY packages/domain/src ./packages/domain/src
+COPY apps/bridge/container.ts apps/bridge/crypto.ts apps/bridge/inference.ts apps/bridge/tsconfig.json apps/bridge/vite.config.ts ./apps/bridge/
+RUN pnpm --filter @saldo/bridge run build
 
 FROM node:24-bookworm-slim
 WORKDIR /app
 ENV NODE_ENV=production
-COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/bridge-dist ./bridge-dist
-COPY package.json ./package.json
+COPY --from=build /app/apps/bridge/dist ./dist
 USER node
 EXPOSE 8080
-CMD ["node", "bridge-dist/bridge/container.js"]
+CMD ["node", "dist/container.mjs"]
