@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, it, expect } from "vite-plus/test";
@@ -6,17 +6,22 @@ import {
   parseSettings,
   releaseSettings,
   databaseIdOf,
-  validateApp,
+  validateApi,
+  validateWeb,
+  validateLegacy,
   validatePrivateEndpoints,
   assertPreserved,
   validateBridge,
   assertLatestMain,
-  assertLegacyWebBuild,
+  assertAccessDenied,
   readBuildOutput,
   validateBuildOutput,
   expectedBindings,
   assertNoSecretValues,
   canonical,
+  contentHash,
+  dockerContextFiles,
+  summarize,
   type ReleaseSettings,
   type Settings,
 } from "../scripts/ci/deployment";
@@ -43,7 +48,6 @@ const settings: Settings = {
     { name: "OWNER_SUB", type: "plain_text", text: "synthetic-owner" },
     { name: "DB", type: "d1", id },
     { name: "FILES", type: "r2_bucket", bucket_name: "saldo-private" },
-    { name: "ASSETS", type: "assets" },
     {
       name: "AI",
       type: "service",
@@ -89,9 +93,53 @@ describe("release settings from the protected Environment", () => {
   });
 });
 
+const web: Settings = {
+  bindings: [
+    ...settings.bindings.filter((b) =>
+      ["APP_ORIGIN", "ACCESS_TEAM_DOMAIN", "ACCESS_AUD"].includes(b.name),
+    ),
+    { name: "ASSETS", type: "assets" },
+    { name: "API", type: "service", service: "saldo-api" },
+  ],
+};
+
 describe("CI live configuration preservation", () => {
-  it("accepts a live app that already carries the release identifiers", () => {
-    expect(() => validateApp(settings, release)).not.toThrow();
+  it("accepts live Workers that already carry the release identifiers", () => {
+    expect(() => validateApi(settings, release)).not.toThrow();
+    expect(() => validateWeb(web, release)).not.toThrow();
+    // The legacy app Worker also served assets; only its identity matters.
+    expect(() =>
+      validateLegacy(
+        {
+          bindings: [...settings.bindings, { name: "ASSETS", type: "assets" }],
+        },
+        release,
+      ),
+    ).not.toThrow();
+  });
+  it("refuses a web Worker that differs from the approved release", () => {
+    const patched = (name: string, patch: Record<string, unknown>) => ({
+      bindings: web.bindings.map((b) =>
+        b.name === name ? { ...b, ...patch } : b,
+      ),
+    });
+    for (const live of [
+      patched("API", { service: "saldo" }),
+      patched("API", { entrypoint: "Admin" }),
+      patched("ACCESS_AUD", { text: "b".repeat(64) }),
+      { bindings: web.bindings.filter((b) => b.name !== "ASSETS") },
+      { bindings: [...web.bindings, { name: "DB", type: "d1", id }] },
+    ])
+      expect(() => validateWeb(live, release)).toThrow();
+  });
+  it("refuses a legacy Worker whose Access settings or database differ", () => {
+    for (const name of ["OWNER_SUB", "DB"])
+      expect(() =>
+        validateLegacy(
+          { bindings: settings.bindings.filter((b) => b.name !== name) },
+          release,
+        ),
+      ).toThrow();
   });
   it("refuses to replace differing live Access or storage configuration", () => {
     const patched = (name: string, patch: Record<string, unknown>) => ({
@@ -109,9 +157,10 @@ describe("CI live configuration preservation", () => {
       patched("FILES", { jurisdiction: "eu" }),
       patched("AI", { entrypoint: "Other" }),
       patched("AI", { service: "another-worker" }),
+      { bindings: [...settings.bindings, { name: "ASSETS", type: "assets" }] },
       { bindings: [...settings.bindings, { name: "OTHER", type: "queue" }] },
     ])
-      expect(() => validateApp(live, release)).toThrow();
+      expect(() => validateApi(live, release)).toThrow();
   });
   it("requires both public alternates explicitly disabled", () => {
     expect(() =>
@@ -198,13 +247,19 @@ it("rejects stale or unverified main commits before mutations", () => {
   expect(() => assertLatestMain(sha, "b".repeat(40))).toThrow();
   expect(() => assertLatestMain(sha, "")).toThrow();
 });
-it("refuses to deploy a web build that is no longer a single-page app", () => {
-  const root = mkdtempSync(join(tmpdir(), "saldo-web-build-"));
-  mkdirSync(join(root, "apps/web/.cloudflare/output"), { recursive: true });
-  expect(() => assertLegacyWebBuild(root)).toThrow("before any change");
-  mkdirSync(join(root, "apps/web/dist"), { recursive: true });
-  writeFileSync(join(root, "apps/web/dist/index.html"), "<!doctype html>");
-  expect(() => assertLegacyWebBuild(root)).not.toThrow();
+it("accepts only an Access redirect to the team domain or 401 for anonymous requests", () => {
+  for (const [status, location] of [
+    [302, "https://example.cloudflareaccess.com/cdn-cgi/access/login/x"],
+    [401, null],
+  ] as const)
+    expect(() => assertAccessDenied(status, location, release)).not.toThrow();
+  for (const [status, location] of [
+    [200, null],
+    [404, null],
+    [302, "https://evil.test/login"],
+    [302, null],
+  ] as const)
+    expect(() => assertAccessDenied(status, location, release)).toThrow();
 });
 
 /** Writes a synthetic Build Output shaped like the Vite plugin's. */
@@ -236,13 +291,20 @@ function buildOutput(
   for (const [path, content] of Object.entries(files)) write(path, content);
   return root;
 }
-const app = {
-  name: "saldo",
+const api = {
+  name: "saldo-api",
   compatibilityDate: "2026-10-01",
   workersDev: false,
   previewUrls: false,
   observability: { enabled: false },
-  env: expectedBindings("app", release),
+  env: expectedBindings("api", release),
+};
+const webWorker = {
+  name: "saldo-web",
+  workersDev: false,
+  previewUrls: false,
+  assets: { runWorkerFirst: true },
+  env: expectedBindings("web", release),
 };
 const bridge = {
   name: "saldo-ai-bridge",
@@ -267,9 +329,16 @@ const container = {
 };
 
 describe("release Build Output", () => {
-  it("accepts exactly the approved app and bridge Workers", () => {
+  it("accepts exactly the approved API, web and bridge Workers", () => {
     expect(() =>
-      validateBuildOutput("app", readBuildOutput(buildOutput(app)), release),
+      validateBuildOutput(
+        "web",
+        readBuildOutput(buildOutput(webWorker)),
+        release,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      validateBuildOutput("api", readBuildOutput(buildOutput(api)), release),
     ).not.toThrow();
     expect(() =>
       validateBuildOutput(
@@ -284,32 +353,50 @@ describe("release Build Output", () => {
       canonical({ a: { c: 3, d: 2 }, b: 1 }),
     );
   });
-  it("refuses a missing, development or tampered app build", () => {
+  it("refuses a web build that serves assets before verifying Access", () => {
+    for (const worker of [
+      { ...webWorker, assets: undefined },
+      { ...webWorker, assets: { runWorkerFirst: false } },
+      { ...webWorker, assets: { runWorkerFirst: ["/api/*"] } },
+      {
+        ...webWorker,
+        env: { ...webWorker.env, API: { type: "worker", worker: "saldo" } },
+      },
+    ])
+      expect(() =>
+        validateBuildOutput(
+          "web",
+          readBuildOutput(buildOutput(worker)),
+          release,
+        ),
+      ).toThrow();
+  });
+  it("refuses a missing, development or tampered API build", () => {
     expect(() => readBuildOutput(join(tmpdir(), "saldo-missing"))).toThrow(
       "Build Output is missing",
     );
-    const env = expectedBindings("app", release);
+    const env = expectedBindings("api", release);
     for (const [worker, options] of [
-      [app, { mode: "development" }],
-      [{ ...app, name: "saldo-web" }, {}],
-      [{ ...app, workersDev: true }, {}],
-      [{ ...app, previewUrls: undefined }, {}],
-      [{ ...app, domains: ["example.test"] }, {}],
+      [api, { mode: "development" }],
+      [{ ...api, name: "saldo-web" }, {}],
+      [{ ...api, workersDev: true }, {}],
+      [{ ...api, previewUrls: undefined }, {}],
+      [{ ...api, domains: ["example.test"] }, {}],
       [
-        { ...app, triggers: [{ type: "fetch", pattern: "example.test/*" }] },
+        { ...api, triggers: [{ type: "fetch", pattern: "example.test/*" }] },
         {},
       ],
-      [{ ...app, env: { ...env, EXTRA: { type: "text", value: "x" } } }, {}],
+      [{ ...api, env: { ...env, EXTRA: { type: "text", value: "x" } } }, {}],
       [
-        { ...app, env: { ...env, ACCESS_AUD: { type: "text", value: "" } } },
+        { ...api, env: { ...env, ACCESS_AUD: { type: "text", value: "" } } },
         {},
       ],
-      [{ ...app, exports: { X: { type: "durable-object" } } }, {}],
-      [app, { containers: container }],
+      [{ ...api, exports: { X: { type: "durable-object" } } }, {}],
+      [api, { containers: container }],
     ] as const)
       expect(() =>
         validateBuildOutput(
-          "app",
+          "api",
           readBuildOutput(buildOutput(worker, options)),
           release,
         ),
@@ -339,7 +426,7 @@ describe("release Build Output", () => {
   });
   it("finds secret values and private files in uploaded code and assets", () => {
     const token = "synthetic-token-never-valid";
-    const clean = buildOutput(app);
+    const clean = buildOutput(api);
     expect(() =>
       assertNoSecretValues(clean, [token, audience, "synthetic-owner"]),
     ).not.toThrow();
@@ -351,7 +438,80 @@ describe("release Build Output", () => {
     ];
     for (const files of leaks)
       expect(() =>
-        assertNoSecretValues(buildOutput(app, { files }), [token, audience]),
+        assertNoSecretValues(buildOutput(api, { files }), [token, audience]),
       ).toThrow();
+  });
+});
+
+describe("idempotent releases", () => {
+  /** A synthetic repository with a bridge Build Output and image sources. */
+  function repository(reference: string, container = "container v1") {
+    const root = mkdtempSync(join(tmpdir(), "saldo-release-root-"));
+    const output = buildOutput(bridge, {
+      containers: {
+        "saldo-ai-bridge-saldoai": {
+          ...container_,
+          image: { localReference: reference },
+        },
+      },
+    });
+    mkdirSync(join(root, "apps/bridge/.cloudflare/output"), {
+      recursive: true,
+    });
+    cpSync(output, join(root, "apps/bridge/.cloudflare/output/v0"), {
+      recursive: true,
+    });
+    mkdirSync(join(root, "packages/domain/src"), { recursive: true });
+    writeFileSync(
+      join(root, ".dockerignore"),
+      "**\n!apps/bridge/container.ts\n!packages/domain/src/*.ts\n",
+    );
+    writeFileSync(join(root, "apps/bridge/container.ts"), container);
+    writeFileSync(join(root, "packages/domain/src/index.ts"), "export {};");
+    writeFileSync(join(root, "packages/domain/src/notes.md"), "ignored");
+    return root;
+  }
+  const container_ = container["saldo-ai-bridge-saldoai"];
+  it("lists exactly the files the bridge image is built from", () => {
+    expect(dockerContextFiles(repository("a"))).toEqual([
+      ".dockerignore",
+      "apps/bridge/container.ts",
+      "packages/domain/src/index.ts",
+    ]);
+  });
+  it("hashes content, not the local image reference", () => {
+    const first = contentHash("bridge", repository("cloudflare-build/a/x:1"));
+    expect(contentHash("bridge", repository("cloudflare-build/b/x:2"))).toBe(
+      first,
+    );
+    expect(
+      contentHash("bridge", repository("cloudflare-build/a/x:1", "changed")),
+    ).not.toBe(first);
+  });
+  it("reports a complete, partial or failed release", () => {
+    const state = (bridge: string, apiOutcome: string, webOutcome: string) =>
+      ({
+        commit: "a".repeat(40),
+        tag: `${"a".repeat(40)}-1-1`,
+        components: {
+          bridge: { hash: "h", outcome: bridge, version: "v1" },
+          api: { hash: "h", outcome: apiOutcome, version: "v2" },
+          web: { hash: "h", outcome: webOutcome },
+        },
+      }) as Parameters<typeof summarize>[0];
+    expect(summarize(state("unchanged", "deployed", "deployed"))).toMatchObject(
+      { ok: true, text: expect.stringContaining("Release complete") },
+    );
+    const partial = summarize(state("deployed", "failed", "not attempted"));
+    expect(partial.ok).toBe(false);
+    expect(partial.text).toContain("partial");
+    expect(partial.text).toContain("| saldo-web | not attempted | - |");
+    expect(
+      summarize(state("failed", "not attempted", "not attempted")),
+    ).toMatchObject({
+      ok: false,
+      text: expect.stringContaining("Release failed"),
+    });
+    expect(summarize(undefined).ok).toBe(false);
   });
 });

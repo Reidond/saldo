@@ -54,6 +54,19 @@ describe("CI production boundaries", () => {
   });
 });
 
+describe("separate API and web deployment", () => {
+  it("deploys each Worker in its own step, so a failure stops the next one", () => {
+    for (const component of ["bridge", "api", "web"])
+      expect(step(`deployment.ts deploy ${component}`)).not.toContain("if:");
+  });
+  it("always records the commit and each Worker's version, even after a failure", () => {
+    const record = step("deployment.ts record");
+    expect(record).toContain("if: always()");
+    expect(record).not.toContain("secrets.");
+    expect(step("Remove ephemeral private state")).toContain("if: always()");
+  });
+});
+
 describe("cf replaces Wrangler in CI", () => {
   it("never uses Wrangler or its GitHub Action", () => {
     expect(workflow).not.toMatch(/wrangler/i);
@@ -91,12 +104,15 @@ describe("cf replaces Wrangler in CI", () => {
       "deployment.ts prepare",
       "deployment.ts migrate",
       "deployment.ts deploy bridge",
-      "deployment.ts deploy app",
+      "deployment.ts deploy api",
+      "deployment.ts deploy web",
       "deployment.ts verify",
+      "deployment.ts record",
     ].map((text) => deploy.indexOf(text));
     expect(order.every((i) => i >= 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
     expect(workflow).not.toContain("time-travel restore");
+    expect(workflow).not.toMatch(/cf (deploy|workers|d1)/);
     expect(workflow).not.toContain("d1 export");
   });
 });

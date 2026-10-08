@@ -34,23 +34,23 @@ describe("safe CI read diagnostics", () => {
     await expect(
       api(
         "private-path",
-        "app-settings",
+        "worker-settings",
         vi.fn(async () => {
           throw new Error(
             "synthetic-token-never-valid private-path private-settings",
           );
         }),
       ),
-    ).rejects.toThrow("app Worker settings read failed (request error)");
+    ).rejects.toThrow("Worker settings read failed (request error)");
   });
   it("does not expose malformed or unsuccessful response contents", async () => {
     await expect(
       api(
         "private-path",
-        "bridge-settings",
+        "worker-deployments",
         vi.fn(async () => new Response("private-settings", { status: 200 })),
       ),
-    ).rejects.toThrow("bridge Worker settings read failed (invalid response)");
+    ).rejects.toThrow("Worker deployments read failed (invalid response)");
     await expect(
       api(
         "private-path",
@@ -75,5 +75,22 @@ describe("safe CI read diagnostics", () => {
         vi.fn(async () => Response.json({ success: true, result })),
       ),
     ).resolves.toEqual(result);
+  });
+  it("treats a missing Worker as missing only when asked to", async () => {
+    const notFound = () => vi.fn(async () => new Response("", { status: 404 }));
+    await expect(
+      api("private-path", "worker-settings", notFound(), { missing: true }),
+    ).resolves.toBeUndefined();
+    await expect(
+      api("private-path", "worker-settings", notFound()),
+    ).rejects.toThrow("Worker settings read failed (HTTP 404)");
+    await expect(
+      api(
+        "private-path",
+        "worker-settings",
+        vi.fn(async () => new Response("", { status: 403 })),
+        { missing: true },
+      ),
+    ).rejects.toThrow("HTTP 403");
   });
 });
