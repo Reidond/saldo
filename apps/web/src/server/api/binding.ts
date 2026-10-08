@@ -30,19 +30,17 @@ const statusSchema = z.object({
   authenticated: z.boolean(),
   aiConnected: z.boolean(),
 });
-const userSchema = z.object({
-  id: z.string().min(1),
-  email: z.string().nullish(),
-  name: z.string().nullish(),
-});
-// GET /api/me is new in the backend layer. Accept `{ user: {...} }` and a bare
-// user object so the two layers can land in either order.
+// GET /api/me, added by the backend layer (apps/api README).
 const meSchema = z
-  .union([z.object({ user: userSchema }), userSchema])
-  .transform((v): Me => {
-    const user = "user" in v ? v.user : v;
-    return { id: user.id, email: user.email ?? null, name: user.name ?? null };
-  });
+  .object({
+    user: z.object({
+      id: z.string().min(1),
+      email: z.string().nullable(),
+      displayName: z.string().nullable(),
+      role: z.string().min(1),
+    }),
+  })
+  .transform((v): Me => v.user);
 const listSchema = z.object({ subscriptions: z.array(subscriptionSchema) });
 const oneSchema = z.object({ subscription: subscriptionSchema });
 const deletedSchema = z.object({ deleted: z.literal(true) });

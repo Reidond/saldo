@@ -231,21 +231,23 @@ describe("service binding ApiClient", () => {
     await expect(failing.listSubscriptions()).rejects.toBeInstanceOf(ApiError);
   });
 
-  it("reads GET /api/me with or without a user wrapper", async () => {
-    const wrapped = client(
+  it("reads GET /api/me and rejects other shapes", async () => {
+    const user = {
+      id: "6f1c2b8e-0000-4000-8000-000000000001",
+      email: "owner@example.com",
+      displayName: null,
+      role: "owner",
+    };
+    const ok = client(recordingApi(() => json({ user })).api);
+    expect(await ok.me()).toEqual(user);
+    const bare = client(recordingApi(() => json(user)).api);
+    await expect(bare.me()).rejects.toMatchObject({ code: "bad_response" });
+    const disabled = client(
       recordingApi(() =>
-        json({ user: { id: "u1", email: "owner@example.com", name: null } }),
+        json({ error: "This Saldo instance is private." }, 403),
       ).api,
     );
-    expect(await wrapped.me()).toEqual({
-      id: "u1",
-      email: "owner@example.com",
-      name: null,
-    });
-    const flat = client(
-      recordingApi(() => json({ id: "u1", email: null })).api,
-    );
-    expect(await flat.me()).toEqual({ id: "u1", email: null, name: null });
+    await expect(disabled.me()).rejects.toMatchObject({ code: "forbidden" });
   });
 });
 

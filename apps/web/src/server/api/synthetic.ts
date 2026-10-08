@@ -63,7 +63,8 @@ export function createSyntheticApiClient(
       return {
         id: "synthetic-owner",
         email: "owner@example.com",
-        name: "Sample Owner",
+        displayName: "Sample Owner",
+        role: "owner",
       };
     },
     async listSubscriptions() {

@@ -10,7 +10,7 @@ import {
 import { Suspense, type ReactNode } from "react";
 import { todayIn } from "../../lib/format";
 import { needsAttention } from "../../lib/subscriptions";
-import { isApiError } from "../../server/api";
+import { isApiError, type Me } from "../../server/api";
 import { getRequestContext } from "../../server/context";
 import { AccountMenu } from "../client/account-menu";
 import { NavigationProgress } from "../client/navigation-progress";
@@ -251,8 +251,8 @@ async function loadMe() {
   }
 }
 
-function displayName(me: { name: string | null; email: string | null } | null) {
-  return me?.name || me?.email || "Owner";
+function displayName(me: Me | null) {
+  return me?.displayName || me?.email || "Owner";
 }
 
 async function AccountBlock() {
@@ -264,7 +264,7 @@ async function AccountBlock() {
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium">{name}</p>
         <p className="truncate text-xs text-ink-muted">
-          {me?.email && me.name ? me.email : "Signed in with Access"}
+          {me?.email && me.displayName ? me.email : "Signed in with Access"}
         </p>
       </div>
       <a

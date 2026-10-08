@@ -27,7 +27,7 @@ export async function SettingsPage() {
     attempt(load.status),
   ]);
   const aiConnected = status.ok && status.value.aiConnected;
-  const name = (me.ok && (me.value.name || me.value.email)) || "Owner";
+  const name = (me.ok && (me.value.displayName || me.value.email)) || "Owner";
   return (
     <>
       <Title>Settings</Title>
@@ -49,7 +49,8 @@ export async function SettingsPage() {
                 <div className="min-w-0">
                   <p className="truncate font-medium">{name}</p>
                   <p className="truncate text-sm text-ink-muted">
-                    {me.value.email ?? "No email shared by Access"} · Owner
+                    {me.value.email ?? "No email shared by Access"} ·{" "}
+                    {me.value.role === "owner" ? "Owner" : me.value.role}
                   </p>
                 </div>
               </div>

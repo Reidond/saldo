@@ -29,7 +29,9 @@ export interface ApiStatus {
 export interface Me {
   id: string;
   email: string | null;
-  name: string | null;
+  displayName: string | null;
+  /** "owner" today; Saldo has no other roles yet. */
+  role: string;
 }
 
 export type SubscriptionInput = Omit<Subscription, "id">;
