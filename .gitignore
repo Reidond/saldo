@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.wrangler/
+.dev.vars
+.env*
+!.env.example
+*.pem
+*.key
+.saldo/
+artifacts/
+bridge-dist/
+*.secrets.json
+*.cleanup.json
+*.bundle.json

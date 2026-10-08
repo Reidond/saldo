@@ -1,0 +1,11 @@
+**
+!package.json
+!package-lock.json
+!bridge/
+!bridge/container.ts
+!bridge/crypto.ts
+!bridge/inference.ts
+!bridge/tsconfig.node.json
+!bridge/Dockerfile
+!src/
+!src/domain.ts
