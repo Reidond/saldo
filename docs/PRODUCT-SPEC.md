@@ -205,7 +205,7 @@ Until OpenAI approves a hosted client, Saldo connects through a **paired local c
 3. The helper encrypts the credentials to that pairing and hands them to Saldo.
 4. From then on, the hosted runtime alone refreshes and uses them.
 
-The step is needed only to connect or reconnect. Day-to-day use, including on a phone, needs no local software.
+The step is needed only to connect or reconnect. Day-to-day use, including on a phone, needs no local software. The owner has adopted a weekly scheduled refresh so that an unused connection does not expire, and the helper is distributed through npm so it can be run with `npx`.
 
 The hosted browser flow remains the target. The owner also asks OpenAI, through the interest form, to confirm that this interim pattern is acceptable, and will revisit the decision when OpenAI answers. The design is in [the ChatGPT connect plan](plans/chatgpt-connect-and-login.md).
 
