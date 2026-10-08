@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "vite-plus/test";
 const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
 describe("CI production boundaries", () => {
   it("pins every official action to an immutable commit", () => {

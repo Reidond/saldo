@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 function legacyConfig(path: string) {
   return JSON.parse(
     readFileSync(path, "utf8")
@@ -9,8 +9,10 @@ function legacyConfig(path: string) {
 }
 describe("deployment privacy invariants retained during cf migration", () => {
   it("routes all app assets through owner authentication and has no public alternate endpoint", () => {
-    const c = legacyConfig("wrangler.jsonc");
-    expect(c.main).toBe("server/worker.ts");
+    const c = legacyConfig("apps/api/wrangler.jsonc");
+    expect(c.main).toBe("src/worker.ts");
+    expect(c.assets.directory).toBe("../web/dist");
+    expect(c.d1_databases[0].migrations_dir).toBe("migrations");
     expect(c.assets.run_worker_first).toBe(true);
     expect(c.assets.binding).toBe("ASSETS");
     expect(c.workers_dev).toBe(false);
@@ -20,7 +22,7 @@ describe("deployment privacy invariants retained during cf migration", () => {
     expect(c.r2_buckets[0].binding).toBe("FILES");
   });
   it("keeps the AI bridge private and preserves its SQLite namespace and single Container", () => {
-    const c = legacyConfig("bridge/wrangler.jsonc");
+    const c = legacyConfig("apps/bridge/wrangler.jsonc");
     expect(c.workers_dev).toBe(false);
     expect(c.preview_urls).toBe(false);
     expect(c.routes ?? []).toHaveLength(0);
@@ -30,7 +32,7 @@ describe("deployment privacy invariants retained during cf migration", () => {
       class_name: "SaldoAI",
       instance_type: "lite",
       max_instances: 1,
-      image_build_context: "..",
+      image_build_context: "../..",
     });
     expect(c.durable_objects.bindings).toEqual([
       { name: "SALDO_AI", class_name: "SaldoAI" },
@@ -45,9 +47,9 @@ import config, {
   inference,
 } from "../deployment/cloudflare.config";
 it("cf definitions preserve protected assets and resource identities", () => {
-  const old = legacyConfig("wrangler.jsonc");
+  const old = legacyConfig("apps/api/wrangler.jsonc");
   expect(appWorker.name).toBe(old.name);
-  expect(appWorker.entrypoint).toBe("../" + old.main);
+  expect(appWorker.entrypoint).toBe("../apps/api/" + old.main);
   expect(appWorker.workersDev).toBe(false);
   expect(appWorker.previewUrls).toBe(false);
   expect(appWorker.assets.runWorkerFirst).toBe(true);
@@ -66,7 +68,7 @@ it("cf bridge preserves class name, private endpoints and bounded Container", ()
   expect(inference).toMatchObject({
     instanceType: "lite",
     maxInstances: 1,
-    image: { dockerfile: "../bridge/Dockerfile", buildContext: ".." },
+    image: { dockerfile: "../apps/bridge/Dockerfile", buildContext: ".." },
   });
 });
 it("cf selection requires explicit mode and rejects public previews", () => {

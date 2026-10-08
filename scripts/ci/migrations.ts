@@ -344,7 +344,7 @@ async function main() {
       "Usage: node scripts/ci/migrations.ts (checks every repository migration).",
     );
   const directory = resolve(
-    fileURLToPath(new URL("../../migrations/", import.meta.url)),
+    fileURLToPath(new URL("../../apps/api/migrations/", import.meta.url)),
   );
   if (!(await lstat(directory)).isDirectory())
     throw new Error(

@@ -1,6 +1,6 @@
 // Prevent cf auto-init from replacing the legacy protected Worker configuration.
-// The React/Vite package is not the cf Worker build package.
+// The workspace root is not the cf Worker build package; see deployment/.
 throw new Error(
-  "Use the deployment package: npm run cf:build:app or npm run cf:build:bridge.",
+  "Use the deployment package: pnpm run cf:build:app or pnpm run cf:build:bridge.",
 );
 export default {};

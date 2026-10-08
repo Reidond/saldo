@@ -7,14 +7,14 @@ import {
 } from "cf/config";
 export const inference = defineContainer({
   name: "saldo-ai-bridge-saldoai",
-  image: { dockerfile: "../bridge/Dockerfile", buildContext: ".." },
+  image: { dockerfile: "../apps/bridge/Dockerfile", buildContext: ".." },
   instanceType: "lite",
   maxInstances: 1,
   observability: { enabled: false },
 });
 export const appWorker = defineWorker({
   name: "saldo",
-  entrypoint: "../server/worker.ts",
+  entrypoint: "../apps/api/src/worker.ts",
   compatibilityDate: "2026-10-01",
   workersDev: false,
   previewUrls: false,
@@ -32,7 +32,7 @@ export const appWorker = defineWorker({
 });
 export const bridgeWorker = defineWorker({
   name: "saldo-ai-bridge",
-  entrypoint: "../bridge/cloudflare.ts",
+  entrypoint: "../apps/bridge/cloudflare.ts",
   compatibilityDate: "2026-10-08",
   compatibilityFlags: ["nodejs_compat"],
   workersDev: false,

@@ -145,13 +145,13 @@ export function makeAppConfig(
   validateApp(settings, databaseId);
   return {
     name: "saldo",
-    main: resolve(root, "server/worker.ts"),
+    main: resolve(root, "apps/api/src/worker.ts"),
     compatibility_date: "2026-10-01",
     workers_dev: false,
     preview_urls: false,
     observability: { enabled: false },
     assets: {
-      directory: resolve(root, "dist"),
+      directory: resolve(root, "apps/web/dist"),
       binding: "ASSETS",
       run_worker_first: true,
     },
@@ -160,7 +160,7 @@ export function makeAppConfig(
         binding: "DB",
         database_name: "saldo",
         database_id: databaseId,
-        migrations_dir: resolve(root, "migrations"),
+        migrations_dir: resolve(root, "apps/api/migrations"),
       },
     ],
     r2_buckets: [
