@@ -1,19 +1,36 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, it, expect } from "vite-plus/test";
 import {
   parseSettings,
+  releaseSettings,
+  databaseIdOf,
   validateApp,
   validatePrivateEndpoints,
   assertPreserved,
-  makeAppConfig,
   validateBridge,
   assertLatestMain,
   assertLegacyWebBuild,
+  readBuildOutput,
+  validateBuildOutput,
+  expectedBindings,
+  assertNoSecretValues,
+  canonical,
+  type ReleaseSettings,
   type Settings,
 } from "../scripts/ci/deployment";
-const id = "00000000-0000-0000-0000-000000000001";
+
+const id = "00000000-0000-4000-8000-000000000001";
+const audience = "a".repeat(64);
+const env = {
+  SALDO_APP_ORIGIN: "https://example.test",
+  SALDO_ACCESS_TEAM_DOMAIN: "example.cloudflareaccess.com",
+  SALDO_ACCESS_AUD: audience,
+  SALDO_OWNER_SUB: "synthetic-owner",
+  SALDO_D1_DATABASE_ID: id,
+};
+const release: ReleaseSettings = releaseSettings(env);
 const settings: Settings = {
   bindings: [
     { name: "APP_ORIGIN", type: "plain_text", text: "https://example.test" },
@@ -22,45 +39,79 @@ const settings: Settings = {
       type: "plain_text",
       text: "example.cloudflareaccess.com",
     },
-    { name: "ACCESS_AUD", type: "plain_text", text: "synthetic-audience" },
+    { name: "ACCESS_AUD", type: "plain_text", text: audience },
     { name: "OWNER_SUB", type: "plain_text", text: "synthetic-owner" },
     { name: "DB", type: "d1", id },
     { name: "FILES", type: "r2_bucket", bucket_name: "saldo-private" },
     { name: "ASSETS", type: "assets" },
+    {
+      name: "AI",
+      type: "service",
+      service: "saldo-ai-bridge",
+      environment: "production",
+    },
     { name: "AI_BRIDGE_SECRET", type: "secret_text" },
   ],
 };
-describe("CI live configuration preservation", () => {
-  it("creates deterministic private app config without copying token values", () => {
-    const c = makeAppConfig(settings, id, "/repo");
-    expect(c.workers_dev).toBe(false);
-    expect(c.preview_urls).toBe(false);
-    expect(c.assets.run_worker_first).toBe(true);
-    expect(c).not.toHaveProperty("vars");
-    expect(c.services).toEqual([{ binding: "AI", service: "saldo-ai-bridge" }]);
-    expect(JSON.stringify(c)).not.toContain("AI_BRIDGE_SECRET");
-    expect(c).not.toHaveProperty("routes");
+
+describe("release settings from the protected Environment", () => {
+  it("accepts well-formed identifiers", () => {
+    expect(release).toEqual({
+      appOrigin: "https://example.test",
+      teamDomain: "example.cloudflareaccess.com",
+      audience,
+      ownerSubject: "synthetic-owner",
+      databaseId: id,
+    });
+    expect(databaseIdOf(env)).toBe(id);
   });
-  it("rejects missing or mismatched live access/storage configuration", () => {
-    expect(() =>
-      validateApp(
-        {
-          ...settings,
-          bindings: settings.bindings.filter((b) => b.name !== "OWNER_SUB"),
-        },
-        id,
+  it("refuses missing or malformed values without echoing them", () => {
+    for (const name of Object.keys(env))
+      expect(() => releaseSettings({ ...env, [name]: " " })).toThrow(name);
+    for (const patch of [
+      { SALDO_APP_ORIGIN: "http://example.test" },
+      { SALDO_APP_ORIGIN: "https://example.test/" },
+      { SALDO_APP_ORIGIN: "not a url" },
+      { SALDO_ACCESS_TEAM_DOMAIN: "example.com" },
+      { SALDO_ACCESS_AUD: "short" },
+      { SALDO_OWNER_SUB: "two words" },
+      { SALDO_D1_DATABASE_ID: "saldo" },
+      { SALDO_D1_DATABASE_ID: "00000000-0000-0000-0000-000000000000" },
+    ]) {
+      const value = Object.values(patch)[0];
+      expect(() => releaseSettings({ ...env, ...patch })).toThrow();
+      try {
+        releaseSettings({ ...env, ...patch });
+      } catch (error) {
+        expect((error as Error).message).not.toContain(value);
+      }
+    }
+  });
+});
+
+describe("CI live configuration preservation", () => {
+  it("accepts a live app that already carries the release identifiers", () => {
+    expect(() => validateApp(settings, release)).not.toThrow();
+  });
+  it("refuses to replace differing live Access or storage configuration", () => {
+    const patched = (name: string, patch: Record<string, unknown>) => ({
+      bindings: settings.bindings.map((b) =>
+        b.name === name ? { ...b, ...patch } : b,
       ),
-    ).toThrow();
-    expect(() => validateApp(settings, "another")).toThrow();
-    expect(() =>
-      validateApp(
-        {
-          ...settings,
-          bindings: [...settings.bindings, { name: "OTHER", type: "queue" }],
-        },
-        id,
-      ),
-    ).toThrow();
+    });
+    for (const live of [
+      {
+        bindings: settings.bindings.filter((b) => b.name !== "OWNER_SUB"),
+      },
+      patched("ACCESS_AUD", { text: "b".repeat(64) }),
+      patched("APP_ORIGIN", { type: "secret_text" }),
+      patched("DB", { id: "00000000-0000-4000-8000-000000000002" }),
+      patched("FILES", { jurisdiction: "eu" }),
+      patched("AI", { entrypoint: "Other" }),
+      patched("AI", { service: "another-worker" }),
+      { bindings: [...settings.bindings, { name: "OTHER", type: "queue" }] },
+    ])
+      expect(() => validateApp(live, release)).toThrow();
   });
   it("requires both public alternates explicitly disabled", () => {
     expect(() =>
@@ -118,45 +169,6 @@ describe("CI live configuration preservation", () => {
     ).toThrow());
 });
 
-it("preserves service entrypoint/environment and bucket jurisdiction before upload", () => {
-  const withRouting = {
-    bindings: [
-      ...settings.bindings.map((b) =>
-        b.name === "FILES" ? { ...b, jurisdiction: "eu" } : b,
-      ),
-      {
-        name: "AI",
-        type: "service",
-        service: "saldo-ai-bridge",
-        environment: "production",
-        entrypoint: "PrivateBridge",
-      },
-    ],
-  };
-  const c = makeAppConfig(withRouting, id, "/repo");
-  expect(c.services[0]).toMatchObject({
-    environment: "production",
-    entrypoint: "PrivateBridge",
-  });
-  expect(c.r2_buckets[0].jurisdiction).toBe("eu");
-  expect(() =>
-    makeAppConfig(
-      {
-        bindings: [
-          ...settings.bindings,
-          {
-            name: "AI",
-            type: "service",
-            service: "saldo-ai-bridge",
-            unrecognizedRouting: "other",
-          },
-        ],
-      },
-      id,
-      "/repo",
-    ),
-  ).toThrow();
-});
 it("requires the exact existing bridge namespace class and local Worker identity", () => {
   validateBridge({ bindings: [] });
   const binding = {
@@ -188,8 +200,158 @@ it("rejects stale or unverified main commits before mutations", () => {
 });
 it("refuses to deploy a web build that is no longer a single-page app", () => {
   const root = mkdtempSync(join(tmpdir(), "saldo-web-build-"));
-  mkdirSync(join(root, "apps/web/dist/client"), { recursive: true });
+  mkdirSync(join(root, "apps/web/.cloudflare/output"), { recursive: true });
   expect(() => assertLegacyWebBuild(root)).toThrow("before any change");
+  mkdirSync(join(root, "apps/web/dist"), { recursive: true });
   writeFileSync(join(root, "apps/web/dist/index.html"), "<!doctype html>");
   expect(() => assertLegacyWebBuild(root)).not.toThrow();
+});
+
+/** Writes a synthetic Build Output shaped like the Vite plugin's. */
+function buildOutput(
+  worker: Record<string, unknown>,
+  {
+    mode = "production",
+    containers = {},
+    files = {},
+  }: {
+    mode?: string;
+    containers?: Record<string, unknown>;
+    files?: Record<string, string>;
+  } = {},
+) {
+  const root = mkdtempSync(join(tmpdir(), "saldo-build-output-"));
+  const write = (path: string, value: string) => {
+    mkdirSync(dirname(join(root, path)), { recursive: true });
+    writeFileSync(join(root, path), value);
+  };
+  write(
+    "config.json",
+    JSON.stringify({ buildContext: { isPreview: false, mode } }),
+  );
+  write("workers/default/worker.config.json", JSON.stringify(worker));
+  for (const [name, config] of Object.entries(containers))
+    write(`containers/${name}/container.config.json`, JSON.stringify(config));
+  write("workers/default/bundle/index.js", "export default {};");
+  for (const [path, content] of Object.entries(files)) write(path, content);
+  return root;
+}
+const app = {
+  name: "saldo",
+  compatibilityDate: "2026-10-01",
+  workersDev: false,
+  previewUrls: false,
+  observability: { enabled: false },
+  env: expectedBindings("app", release),
+};
+const bridge = {
+  name: "saldo-ai-bridge",
+  workersDev: false,
+  previewUrls: false,
+  env: expectedBindings("bridge", release),
+  exports: {
+    SaldoAI: {
+      type: "durable-object",
+      storage: "sqlite",
+      container: "saldo-ai-bridge-saldoai",
+    },
+  },
+};
+const container = {
+  "saldo-ai-bridge-saldoai": {
+    name: "saldo-ai-bridge-saldoai",
+    maxInstances: 1,
+    instanceType: "lite",
+    image: { localReference: "cloudflare-build/a/saldo-ai-bridge-saldoai:b" },
+  },
+};
+
+describe("release Build Output", () => {
+  it("accepts exactly the approved app and bridge Workers", () => {
+    expect(() =>
+      validateBuildOutput("app", readBuildOutput(buildOutput(app)), release),
+    ).not.toThrow();
+    expect(() =>
+      validateBuildOutput(
+        "bridge",
+        readBuildOutput(buildOutput(bridge, { containers: container })),
+        release,
+      ),
+    ).not.toThrow();
+  });
+  it("compares bindings regardless of key order", () => {
+    expect(canonical({ b: 1, a: { d: 2, c: 3 } })).toBe(
+      canonical({ a: { c: 3, d: 2 }, b: 1 }),
+    );
+  });
+  it("refuses a missing, development or tampered app build", () => {
+    expect(() => readBuildOutput(join(tmpdir(), "saldo-missing"))).toThrow(
+      "Build Output is missing",
+    );
+    const env = expectedBindings("app", release);
+    for (const [worker, options] of [
+      [app, { mode: "development" }],
+      [{ ...app, name: "saldo-web" }, {}],
+      [{ ...app, workersDev: true }, {}],
+      [{ ...app, previewUrls: undefined }, {}],
+      [{ ...app, domains: ["example.test"] }, {}],
+      [
+        { ...app, triggers: [{ type: "fetch", pattern: "example.test/*" }] },
+        {},
+      ],
+      [{ ...app, env: { ...env, EXTRA: { type: "text", value: "x" } } }, {}],
+      [
+        { ...app, env: { ...env, ACCESS_AUD: { type: "text", value: "" } } },
+        {},
+      ],
+      [{ ...app, exports: { X: { type: "durable-object" } } }, {}],
+      [app, { containers: container }],
+    ] as const)
+      expect(() =>
+        validateBuildOutput(
+          "app",
+          readBuildOutput(buildOutput(worker, options)),
+          release,
+        ),
+      ).toThrow();
+  });
+  it("refuses a bridge whose Durable Object or Container changed", () => {
+    for (const [worker, containers] of [
+      [{ ...bridge, exports: {} }, container],
+      [bridge, {}],
+      [
+        bridge,
+        {
+          "saldo-ai-bridge-saldoai": {
+            ...container["saldo-ai-bridge-saldoai"],
+            maxInstances: 2,
+          },
+        },
+      ],
+    ] as const)
+      expect(() =>
+        validateBuildOutput(
+          "bridge",
+          readBuildOutput(buildOutput(worker, { containers })),
+          release,
+        ),
+      ).toThrow();
+  });
+  it("finds secret values and private files in uploaded code and assets", () => {
+    const token = "synthetic-token-never-valid";
+    const clean = buildOutput(app);
+    expect(() =>
+      assertNoSecretValues(clean, [token, audience, "synthetic-owner"]),
+    ).not.toThrow();
+    const leaks: Record<string, string>[] = [
+      { "workers/default/bundle/index.js": `const t = "${token}";` },
+      { "workers/default/assets/app.js": `aud="${audience}"` },
+      { "workers/default/bundle/.dev.vars": "X=1" },
+      { "workers/default/assets/key.pem": "-----" },
+    ];
+    for (const files of leaks)
+      expect(() =>
+        assertNoSecretValues(buildOutput(app, { files }), [token, audience]),
+      ).toThrow();
+  });
 });

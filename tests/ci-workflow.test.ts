@@ -1,22 +1,28 @@
 import { readFileSync } from "node:fs";
 import { describe, it, expect } from "vite-plus/test";
 const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
+const checks = workflow.split("\n  check:\n")[1].split("\n  deploy:\n")[0];
+const deploy = workflow.split("\n  deploy:\n")[1];
+/** The deploy job's steps, each as its own YAML text. */
+const steps = deploy.split("\n      - ").slice(1);
+const step = (text: string) => {
+  const found = steps.filter((s) => s.includes(text));
+  expect(found, text).toHaveLength(1);
+  return found[0];
+};
+
 describe("CI production boundaries", () => {
   it("pins every official action to an immutable commit", () => {
     const actions = [...workflow.matchAll(/uses:\s+([^\s]+)@([^\s]+)/g)];
     expect(actions.length).toBeGreaterThan(0);
     for (const [, name, ref] of actions) {
-      expect([
-        "actions/checkout",
-        "actions/setup-node",
-        "cloudflare/wrangler-action",
-      ]).toContain(name);
+      expect(["actions/checkout", "actions/setup-node"]).toContain(name);
       expect(ref).toMatch(/^[a-f0-9]{40}$/);
     }
   });
   it("keeps PR checks outside the protected production Environment", () => {
-    const checks = workflow.split("  check:")[1].split("  deploy:")[0];
     expect(checks).not.toContain("secrets.");
+    expect(checks).not.toContain("vars.");
     expect(checks).not.toContain("environment:");
     expect(workflow).toContain("contents: read");
     expect(workflow).not.toContain("write-all");
@@ -32,44 +38,64 @@ describe("CI production boundaries", () => {
     expect(workflow).toContain("runs-on: ubuntu-latest");
     expect(workflow).not.toContain("ghcr.io");
   });
-  it("preserves live vars and secrets and avoids app domain mutations", () => {
-    expect(workflow).toContain(
-      "deploy --config apps/bridge/wrangler.jsonc --keep-vars",
-    );
-    expect(workflow).toContain("versions upload --config");
-    expect(workflow).toContain("--keep-vars --tag");
-    expect(workflow).toContain("versions deploy --config");
-    expect(workflow).not.toContain("triggers deploy");
-    expect(workflow).not.toMatch(/\n\s+secrets:\s/);
-    expect(workflow).toContain("deployment.ts verify");
+  it("gives secrets only to the steps that need them", () => {
+    const jobEnv = deploy.split("\n    steps:\n")[0];
+    expect(jobEnv).not.toContain("secrets.");
+    for (const [i, s] of steps.entries())
+      if (s.includes("secrets.CLOUDFLARE_API_TOKEN"))
+        expect(s, `step ${i}`).toMatch(
+          /deployment\.ts (prepare|migrate|deploy|verify)|TOKEN_CONFIGURED/,
+        );
+    for (const s of steps.filter((s) => s.includes("secrets.SALDO_")))
+      expect(s).toMatch(
+        /deployment\.ts (settings|prepare|verify)|pnpm run build/,
+      );
+    expect(step("pnpm install --frozen-lockfile")).not.toContain("secrets.");
   });
-  it("installs the locked pnpm workspace with the Wrangler used for deployment", () => {
+});
+
+describe("cf replaces Wrangler in CI", () => {
+  it("never uses Wrangler or its GitHub Action", () => {
+    expect(workflow).not.toMatch(/wrangler/i);
+    expect(workflow).toContain('CF_SEND_TELEMETRY: "false"');
+  });
+  it("installs the locked pnpm workspace and checks it in both jobs", () => {
     expect(workflow).not.toMatch(/\bnpm (ci|install|run)\b/);
+    expect(workflow).not.toMatch(/\bnpx\b/);
     expect(workflow.match(/corepack enable pnpm/g)).toHaveLength(2);
     expect(workflow.match(/pnpm install --frozen-lockfile/g)).toHaveLength(2);
     expect(workflow.match(/pnpm run check/g)).toHaveLength(2);
-    expect(workflow.match(/packageManager: pnpm/g)).toHaveLength(2);
-    expect(workflow.match(/--file apps\/bridge\/Dockerfile/g)).toHaveLength(2);
-    // wrangler-action skips its own install only when the workspace root
-    // already resolves the exact pinned version.
-    const root = JSON.parse(readFileSync("package.json", "utf8"));
-    expect(root.devDependencies.wrangler).toBe("catalog:");
-    const pinned = readFileSync("pnpm-workspace.yaml", "utf8").match(
-      /^ {2}wrangler: (\S+)$/m,
-    )?.[1];
-    const versions = [...workflow.matchAll(/wranglerVersion: "([^"]+)"/g)];
-    expect(versions).toHaveLength(2);
-    for (const [, version] of versions) expect(version).toBe(pinned);
+    expect(workflow.match(/node scripts\/ci\/migrations\.ts/g)).toHaveLength(2);
+    expect(workflow.match(/pnpm run deploy:check/g)).toHaveLength(2);
+    expect(workflow.match(/node scripts\/ci\/smoke-image\.ts/g)).toHaveLength(
+      2,
+    );
+    expect(workflow).toContain("DOCKER_DEFAULT_PLATFORM: linux/amd64");
   });
-  it("runs recovery preflight and migrations before either deployment", () => {
-    const prepare = workflow.indexOf("deployment.ts prepare"),
-      migrate = workflow.indexOf("deployment.ts migrate"),
-      bridge = workflow.indexOf("Deploy the private bridge"),
-      app = workflow.indexOf("Upload and activate the app");
-    expect(prepare).toBeLessThan(migrate);
-    expect(migrate).toBeLessThan(bridge);
-    expect(bridge).toBeLessThan(app);
-    expect(workflow).toContain("--platform linux/amd64");
+  it("builds the release with the protected settings before validating it", () => {
+    const build = step("pnpm run build");
+    expect(build).toContain("SALDO_RELEASE: production");
+    expect(build).toContain("secrets.SALDO_ACCESS_AUD");
+    expect(build).toContain("secrets.SALDO_OWNER_SUB");
+    expect(deploy).toContain("vars.SALDO_APP_ORIGIN");
+    expect(deploy).toContain("vars.SALDO_D1_DATABASE_ID");
+  });
+  it("runs every safety step before the first mutation, in order", () => {
+    const order = [
+      "deployment.ts settings",
+      "pnpm run check",
+      "deployment.ts current-main",
+      "pnpm run build",
+      "pnpm run deploy:check",
+      "smoke-image.ts",
+      "deployment.ts prepare",
+      "deployment.ts migrate",
+      "deployment.ts deploy bridge",
+      "deployment.ts deploy app",
+      "deployment.ts verify",
+    ].map((text) => deploy.indexOf(text));
+    expect(order.every((i) => i >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
     expect(workflow).not.toContain("time-travel restore");
     expect(workflow).not.toContain("d1 export");
   });
