@@ -9,14 +9,17 @@ allowBuilds:
 
 catalog:
   "@cloudflare/containers": 0.3.7
+  "@cloudflare/vite-plugin": 1.63.0
   "@cloudflare/workers-types": 5.20261008.1
   "@sinclair/typebox": 0.34.52
+  "@tailwindcss/vite": 4.3.3
   "@testing-library/react": 16.3.3
   "@testing-library/user-event": 14.6.7
   "@types/node": 22.20.5
   "@types/react": 19.3.0
   "@types/react-dom": 19.3.0
   "@vitejs/plugin-react": 6.1.2
+  "@vitejs/plugin-rsc": 0.5.36
   cf: 1.0.0-beta.13
   elysia: 1.4.30
   jose: 6.2.12
@@ -26,6 +29,8 @@ catalog:
   playwright: 1.64.0
   react: 19.3.0
   react-dom: 19.3.0
+  rsc-html-stream: 0.0.6
+  tailwindcss: 4.3.3
   tsx: 4.23.15
   typescript: 5.9.3
   vite: npm:@voidzero-dev/vite-plus-core@1.1.0
