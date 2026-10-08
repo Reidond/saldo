@@ -8,21 +8,39 @@ The intended product, scope, open decisions, and current pause state are describ
 
 Local implementation. Not deployed. Real AI requires an explicitly configured private inference bridge and user-controlled ChatGPT sign-in. No API key or paid API fallback is silently enabled. The app starts without personal records; the optional sample workspace contains synthetic examples only.
 
+## Repository layout
+
+Saldo is a [pnpm](https://pnpm.io) workspace that uses [Vite+](https://viteplus.dev) (`vp`) for development, builds, tests, linting and formatting.
+
+- `apps/api` (`@saldo/api`): the Cloudflare Worker that authenticates the owner, serves `/api` and the web build as protected static assets. D1 migrations live in `apps/api/migrations`.
+- `apps/web` (`@saldo/web`): the React client built with Vite.
+- `apps/bridge` (`@saldo/bridge`): the private AI bridge Worker and its Node container.
+- `packages/domain` (`@saldo/domain`): framework-free schemas and finance logic shared by the apps.
+- `deployment` (`@saldo/deployment`): the isolated Cloudflare `cf` CLI build definitions.
+- `scripts/ci`, `tests`: CI safety scripts and repository-level configuration tests.
+
+Contributor and agent conventions are in [AGENTS.md](AGENTS.md).
+
 ## Run locally
 
-```sh
-npm ci
-npm run dev
-```
-
-Vite opens the synthetic/local UI on localhost:5173. The API proxy points at localhost:8787. A local UI is not a production authentication boundary. For backend development, build first, apply the local migration, then run `npm run worker:dev`. The Worker deliberately fails closed until Cloudflare Access verification is configured, even in development.
+Requires Node 24.11+ (CI uses Node 24) or Node 26+. On Node 24, `corepack enable pnpm` provides the pnpm version pinned in `package.json`; otherwise install that pnpm version yourself. Then:
 
 ```sh
-npm run build
-npm test
-npm run lint
-npm run typecheck
+pnpm install
+pnpm dev
 ```
+
+Vite opens the synthetic/local UI on localhost:5173. The API proxy points at localhost:8787. A local UI is not a production authentication boundary. For backend development, build first (`pnpm build`), apply the local migration (`pnpm db:migrate`), then run `pnpm dev:api`. The Worker deliberately fails closed until Cloudflare Access verification is configured, even in development.
+
+```sh
+pnpm build
+pnpm test
+pnpm lint
+pnpm typecheck
+pnpm check
+```
+
+`pnpm check` runs everything CI runs: formatting, lint and type-aware checks (`vp check`), strict TypeScript, all tests and all builds, including the bridge container bundle. `pnpm format` applies the formatter.
 
 ## Data and review semantics
 
@@ -43,7 +61,7 @@ This repository includes no tokens, account IDs, real subscriptions, imported sc
 
 ## Cloudflare `cf` CLI
 
-Use the isolated `deployment/` package to retain the protected Worker while Vite builds the frontend. Run `npm run cf:setup`, then `npm run cf:build:app`; the bridge build also requires Docker. See [the cf deployment guide](docs/CF-DEPLOYMENT.md) for verified behavior, private configuration, legacy Wrangler support and pending deployment checks. Do not run `cf init` in the root or bridge source directory.
+Use the isolated `deployment/` workspace package to retain the protected Worker while Vite builds the frontend. Run `pnpm run cf:build:app`; `pnpm run cf:build:bridge` also requires Docker. See [the cf deployment guide](docs/CF-DEPLOYMENT.md) for verified behavior, private configuration, legacy Wrangler support and pending deployment checks. Do not run `cf init` in the root or in any app directory.
 
 ## Continuous delivery
 

@@ -15,7 +15,7 @@ Access origin, issuer, audience and owner subject are read from the current app 
 
 ## Delivery sequence
 
-1. Run locked dependency installation, type checks, lint, tests, production asset build and bridge compilation.
+1. Run the locked pnpm installation and `pnpm run check`: formatting, lint and type-aware checks, strict type checks, tests, the production asset build and the bridge container bundle.
 2. Require the conservative additive-only migration grammar. Unsupported or destructive SQL is rejected. Always add a new numbered migration; do not edit already-applied migrations.
 3. Build a `linux/amd64` image on the standard `ubuntu-latest` runner. Smoke-test it with no network and a synthetic bridge secret, checking rejection paths only.
 4. In a serialized production job, repeat checks/builds, verify private live settings and disabled public alternate endpoints, and obtain a D1 Time Travel recovery bookmark. Record the pre-migration UTC time in the run summary. Database contents are never exported into GitHub or uploaded as artifacts.
@@ -30,7 +30,7 @@ Production jobs use one concurrency group without cancellation. Later pushes can
 
 ## Pinned tools and remaining acceptance
 
-The official checkout, setup-node and Cloudflare Wrangler actions use full release commit hashes. Wrangler is pinned to 4.148.0 for deployment. Docker image construction still uses the repository Dockerfile; no production credential is passed into the image build or test container.
+The official checkout, setup-node and Cloudflare Wrangler actions use full release commit hashes. pnpm is enabled with Node 24's Corepack at the exact `packageManager` version from `package.json`. Wrangler is pinned to 4.148.0 for deployment; the workspace catalog pins the same version at the root so the Wrangler action uses the locked install instead of installing its own (a configuration test enforces the match). Docker image construction still uses the repository Dockerfile; no production credential is passed into the image build or test container.
 
 Local source tests do not prove a GitHub run or live rollout succeeded. This VM cannot run Docker, so the first Actions run verifies the actual image build. Owner login, live ChatGPT authorization, Container rollout/health and end-to-end inference remain separate acceptance checks. A healthy deployed bridge may correctly report disconnected until owner-operated SIWC setup is complete.
 
