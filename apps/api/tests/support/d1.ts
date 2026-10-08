@@ -43,6 +43,7 @@ export async function startLocalD1(): Promise<LocalD1> {
     JSON.stringify({
       name: "saldo-test",
       compatibility_date: "2026-10-01",
+      send_metrics: false,
       d1_databases: [
         {
           binding: "DB",
