@@ -34,6 +34,8 @@ export default defineConfig(({ command }) => ({
                   SALDO_DATA_SOURCE: "synthetic",
                   SALDO_SYNTHETIC_AI:
                     process.env.SALDO_SYNTHETIC_AI ?? "available",
+                  SALDO_SYNTHETIC_SCENARIO:
+                    process.env.SALDO_SYNTHETIC_SCENARIO ?? "sample",
                 },
               }
             : undefined,

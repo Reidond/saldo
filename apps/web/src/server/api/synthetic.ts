@@ -24,6 +24,8 @@ export interface SyntheticOptions {
   seed?: Subscription[];
   /** Milliseconds the fake AI waits before answering. */
   aiDelayMs?: number;
+  /** Every data call fails as if the API Worker were unreachable. */
+  down?: boolean;
 }
 
 export function createSyntheticApiClient(
@@ -53,7 +55,7 @@ export function createSyntheticApiClient(
     }
   };
 
-  return {
+  const client: ApiClient = {
     async status() {
       return { authenticated: true, aiConnected: ai === "available" };
     },
@@ -107,6 +109,19 @@ export function createSyntheticApiClient(
       await delay(options.aiDelayMs ?? 1600, signal);
       return syntheticReply(input, items);
     },
+  };
+  if (!options.down) return client;
+  const unavailable = () =>
+    Promise.reject(new ApiError("unavailable", undefined, 503));
+  return {
+    ...client,
+    status: unavailable,
+    listSubscriptions: unavailable,
+    createSubscription: unavailable,
+    updateSubscription: unavailable,
+    deleteSubscription: unavailable,
+    saveReview: unavailable,
+    chat: unavailable,
   };
 }
 

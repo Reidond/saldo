@@ -26,7 +26,11 @@ export async function apiClientFor(
     throw new Error("Synthetic data is not available in production builds.");
   // One store per dev server, so edits survive navigation and reloads.
   syntheticClient ??= import("./synthetic").then((m) =>
-    m.createSyntheticApiClient({ ai: config.ai }),
+    m.createSyntheticApiClient({
+      ai: config.ai,
+      seed: config.scenario === "empty" ? [] : undefined,
+      down: config.scenario === "api-down",
+    }),
   );
   return syntheticClient;
 }
