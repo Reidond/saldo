@@ -33,6 +33,8 @@ From the repository root: `pnpm dev:api` runs `wrangler dev` (run `pnpm build` a
 
 The local D1 comes from Wrangler's `getPlatformProxy()` (workerd, in memory; see `tests/support/d1.ts`). It is used instead of `@cloudflare/vitest-pool-workers`, which is tied to specific Vitest releases rather than to Vite+'s bundled test runner. Startup takes a few seconds per suite. All test data is synthetic.
 
+This harness is the only Wrangler API that the backend code uses. It generates its own temporary config and does not read `wrangler.jsonc`. When the project moves to the cf CLI, `startLocalD1()` in `tests/support/d1.ts` is the single place to swap for cf's local D1, or for Miniflare. Nothing else needs to change.
+
 ## HTTP contract
 
 The web client depends on everything in this section. Change it deliberately, and update `tests/http-contract.test.ts` with it.
