@@ -34,7 +34,7 @@ describe("CI production boundaries", () => {
   });
   it("preserves live vars and secrets and avoids app domain mutations", () => {
     expect(workflow).toContain(
-      "deploy --config bridge/wrangler.jsonc --keep-vars",
+      "deploy --config apps/bridge/wrangler.jsonc --keep-vars",
     );
     expect(workflow).toContain("versions upload --config");
     expect(workflow).toContain("--keep-vars --tag");
@@ -42,6 +42,24 @@ describe("CI production boundaries", () => {
     expect(workflow).not.toContain("triggers deploy");
     expect(workflow).not.toMatch(/\n\s+secrets:\s/);
     expect(workflow).toContain("deployment.ts verify");
+  });
+  it("installs the locked pnpm workspace with the Wrangler used for deployment", () => {
+    expect(workflow).not.toMatch(/\bnpm (ci|install|run)\b/);
+    expect(workflow.match(/corepack enable pnpm/g)).toHaveLength(2);
+    expect(workflow.match(/pnpm install --frozen-lockfile/g)).toHaveLength(2);
+    expect(workflow.match(/pnpm run check/g)).toHaveLength(2);
+    expect(workflow.match(/packageManager: pnpm/g)).toHaveLength(2);
+    expect(workflow.match(/--file apps\/bridge\/Dockerfile/g)).toHaveLength(2);
+    // wrangler-action skips its own install only when the workspace root
+    // already resolves the exact pinned version.
+    const root = JSON.parse(readFileSync("package.json", "utf8"));
+    expect(root.devDependencies.wrangler).toBe("catalog:");
+    const pinned = readFileSync("pnpm-workspace.yaml", "utf8").match(
+      /^ {2}wrangler: (\S+)$/m,
+    )?.[1];
+    const versions = [...workflow.matchAll(/wranglerVersion: "([^"]+)"/g)];
+    expect(versions).toHaveLength(2);
+    for (const [, version] of versions) expect(version).toBe(pinned);
   });
   it("runs recovery preflight and migrations before either deployment", () => {
     const prepare = workflow.indexOf("deployment.ts prepare"),
