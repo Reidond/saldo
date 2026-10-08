@@ -20,7 +20,7 @@ import {
   type Vault,
 } from "./auth.js";
 import { seal, stateKey, unseal, type Envelope } from "./crypto.js";
-import { transferSecrets } from "./transfer.js";
+import { secretsPatch, transferSecrets } from "./transfer.js";
 const directory = resolve(
   process.env.SALDO_STATE_DIR ?? join(homedir(), ".config", "saldo"),
 );
@@ -372,11 +372,16 @@ async function main() {
       const encrypted = JSON.stringify(await seal(bundle, key));
       const chunks = transferSecrets(encrypted);
       await atomicWrite(destination, encrypted);
-      await atomicWrite(`${destination}.secrets.json`, JSON.stringify(chunks));
+      await atomicWrite(
+        `${destination}.secrets.json`,
+        JSON.stringify(secretsPatch(chunks)),
+      );
       await atomicWrite(
         `${destination}.cleanup.json`,
         JSON.stringify(
-          Object.fromEntries(Object.keys(chunks).map((name) => [name, null])),
+          secretsPatch(
+            Object.fromEntries(Object.keys(chunks).map((name) => [name, null])),
+          ),
         ),
       );
       process.stdout.write(

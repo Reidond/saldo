@@ -13,6 +13,20 @@ export function transferSecrets(bundle: string): Record<string, string> {
       bundle.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
   return values;
 }
+/**
+ * A `cf workers secrets bulk --file` body (JSON Merge Patch): each named
+ * secret is set, or deleted when its value is null. Other secrets are kept.
+ */
+export function secretsPatch(values: Record<string, string | null>) {
+  return {
+    secrets: Object.fromEntries(
+      Object.entries(values).map(([name, text]) => [
+        name,
+        text === null ? null : { name, type: "secret_text", text },
+      ]),
+    ),
+  };
+}
 export function readTransfer(env: Record<string, unknown>): string | undefined {
   if (env.SIWC_BOOTSTRAP_PARTS === undefined) return undefined;
   const raw = env.SIWC_BOOTSTRAP_PARTS;

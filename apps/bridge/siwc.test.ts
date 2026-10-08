@@ -2,7 +2,7 @@ import { describe, it, expect, vi } from "vite-plus/test";
 import { stateKey, seal, unseal, secretMatches, type Envelope } from "./crypto";
 import { emptyVault, type Account } from "./auth";
 import { SessionVault, type EncryptedStorage } from "./vault";
-import { transferSecrets, readTransfer } from "./transfer";
+import { transferSecrets, readTransfer, secretsPatch } from "./transfer";
 import {
   completedResponse,
   parseResult,
@@ -64,6 +64,18 @@ describe("encrypted OAuth state", () => {
     delete parts.SIWC_BOOTSTRAP_BUNDLE_01;
     expect(() => readTransfer(parts)).toThrow("MISSING_TRANSFER_PART");
     expect(readTransfer({})).toBeUndefined();
+  });
+  it("writes cf bulk secret patches that set chunks and later delete them", () => {
+    expect(secretsPatch({ SIWC_BOOTSTRAP_PARTS: "1", OLD: null })).toEqual({
+      secrets: {
+        SIWC_BOOTSTRAP_PARTS: {
+          name: "SIWC_BOOTSTRAP_PARTS",
+          type: "secret_text",
+          text: "1",
+        },
+        OLD: null,
+      },
+    });
   });
   it("authenticates encryption and refuses corruption/wrong keys", async () => {
     const key = await stateKey("11".repeat(32));
