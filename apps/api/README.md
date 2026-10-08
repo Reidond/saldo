@@ -17,7 +17,9 @@ tests/               see "Tests"
 
 ## Commands
 
-From the repository root: `pnpm dev:api` runs `wrangler dev` (run `pnpm build` and `pnpm db:migrate` first), and `vp run --filter @saldo/api test` runs this package's tests. `pnpm check` runs everything CI runs.
+From the repository root: `pnpm db:migrate` applies the migrations to the local D1 (`cf d1 migrations apply … --local`), `pnpm dev:api` runs `cf dev` on `127.0.0.1:8787`, and `vp run --filter @saldo/api test` runs this package's tests. `pnpm check` runs everything CI runs. The Worker is configured in `cloudflare.config.ts` and built by `cf build` (Vite and the Cloudflare Vite plugin).
+
+`cf dev` evaluates the Worker inside a runner object, where workerd forbids code generation, so `src/http/app.ts` falls back to Elysia's dynamic handlers there. A deployed Worker compiles the app at startup with the Cloudflare adapter, as before.
 
 ## Tests
 
@@ -31,9 +33,9 @@ From the repository root: `pnpm dev:api` runs `wrangler dev` (run `pnpm build` a
 | `architecture.test.ts`     | The import and SQL boundaries between layers.                                                                                                                                                     |
 | `schema.test.ts`           | Database-level duplicate and account isolation (`node:sqlite`).                                                                                                                                   |
 
-The local D1 comes from Wrangler's `getPlatformProxy()` (workerd, in memory; see `tests/support/d1.ts`). It is used instead of `@cloudflare/vitest-pool-workers`, which is tied to specific Vitest releases rather than to Vite+'s bundled test runner. Startup takes a few seconds per suite. All test data is synthetic.
+The local D1 comes from Miniflare 5, the runtime under `cf` (workerd, in memory; see `tests/support/d1.ts`). It is used instead of `@cloudflare/vitest-pool-workers`, which is tied to specific Vitest releases rather than to Vite+'s bundled test runner. Startup takes a few seconds per suite. All test data is synthetic.
 
-This harness is the only Wrangler API that the backend code uses. It generates its own temporary config and does not read `wrangler.jsonc`. When the project moves to the cf CLI, `startLocalD1()` in `tests/support/d1.ts` is the single place to swap for cf's local D1, or for Miniflare. Nothing else needs to change.
+`startLocalD1()` in `tests/support/d1.ts` is the only place that starts it, and it does not read `cloudflare.config.ts`.
 
 ## HTTP contract
 

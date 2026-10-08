@@ -6,16 +6,15 @@ Never commit secrets, tokens, account or resource IDs, `.dev.vars`, real financi
 
 ## Repository layout
 
-| Path              | Package             | Contents                                                                                                                                                                   |
-| ----------------- | ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `apps/api`        | `@saldo/api`        | Cloudflare Worker: owner authentication, `/api`, and the web build served as protected static assets. `wrangler.jsonc`, D1 migrations in `migrations/`, tests in `tests/`. |
-| `apps/web`        | `@saldo/web`        | React client SPA built with Vite into `apps/web/dist`. Tests in `tests/`.                                                                                                  |
-| `apps/bridge`     | `@saldo/bridge`     | Private AI bridge: Worker (`cloudflare.ts`), Node container (`container.ts`, `Dockerfile`), owner-run SIWC helper (`bootstrap.ts`), `wrangler.jsonc`.                      |
-| `packages/domain` | `@saldo/domain`     | Framework-free schemas and finance logic (zod) shared by the apps, exported as TypeScript source.                                                                          |
-| `deployment`      | `@saldo/deployment` | Isolated Cloudflare `cf` CLI build definitions. Its manifest lists only `cf` and Wrangler; keep it that way.                                                               |
-| `scripts/ci`      |                     | CI safety scripts (additive-migration policy, deployment preflight and verification, image smoke test), run with plain `node`.                                             |
-| `tests`           |                     | Repository-level tests for the CI workflow, CI scripts and deployment configuration.                                                                                       |
-| `docs`            |                     | Product specification, deployment, GitHub delivery and SIWC guides.                                                                                                        |
+| Path              | Package         | Contents                                                                                                                                                    |
+| ----------------- | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/api`        | `@saldo/api`    | API Worker (Elysia): owner authentication and `/api`. `cloudflare.config.ts`, D1 migrations in `migrations/`, tests in `tests/`.                            |
+| `apps/web`        | `@saldo/web`    | Web Worker: React Server Components with SSR and the protected static assets. `cloudflare.config.ts`, tests in `tests/`.                                    |
+| `apps/bridge`     | `@saldo/bridge` | Private AI bridge: Worker (`cloudflare.ts`), Node container (`container.ts`, `Dockerfile`), owner-run SIWC helper (`bootstrap.ts`), `cloudflare.config.ts`. |
+| `packages/domain` | `@saldo/domain` | Framework-free schemas and finance logic (zod) shared by the apps, exported as TypeScript source.                                                           |
+| `scripts/ci`      |                 | CI safety scripts (additive-migration policy, deployment preflight, deploy and verification, image smoke test), run with plain `node`.                      |
+| `tests`           |                 | Repository-level tests for the CI workflow, CI scripts and the cf configuration.                                                                            |
+| `docs`            |                 | Product specification, deployment and SIWC guides.                                                                                                          |
 
 ## Commands
 
@@ -24,16 +23,16 @@ Run from the repository root:
 | Command          | What it does                                                                                       |
 | ---------------- | -------------------------------------------------------------------------------------------------- |
 | `pnpm install`   | Install the workspace (CI uses `--frozen-lockfile`).                                               |
-| `pnpm dev`       | Web dev server on `127.0.0.1:5173`; `/api` is proxied to `127.0.0.1:8787`.                         |
-| `pnpm dev:api`   | `wrangler dev` for the app Worker. Run `pnpm build` and `pnpm db:migrate` first.                   |
-| `pnpm build`     | Build every package that has a build: web assets and the bridge container bundle.                  |
+| `pnpm dev`       | Web dev server on `127.0.0.1:5173` with synthetic data.                                            |
+| `pnpm dev:api`   | `cf dev` for the API Worker on `127.0.0.1:8787`. Run `pnpm db:migrate` first.                      |
+| `pnpm build`     | `cf build` for every Worker, plus the bridge container bundle and image (needs Docker).            |
 | `pnpm test`      | Every Vitest project (all apps, packages and repository tests) in one `vp test` run.               |
 | `pnpm lint`      | Oxlint with type-aware rules (`vp lint`).                                                          |
 | `pnpm format`    | Format with Oxfmt (`vp fmt`).                                                                      |
 | `pnpm typecheck` | Strict `tsc --noEmit` for each package plus the repository-level files.                            |
 | `pnpm check`     | What CI runs: `vp check` (format check, lint, type-aware checks), typecheck, tests and all builds. |
 
-Target one package with `vp run --filter @saldo/<name> <script>` (for example `vp run --filter @saldo/api test`), or run a built-in command in a package with `vp -C apps/web build`. Other root scripts: `preview`, `db:migrate`, `cf:build:app`, `cf:build:bridge`, `cf:check:app`, `cf:check:bridge`.
+Target one package with `vp run --filter @saldo/<name> <script>` (for example `vp run --filter @saldo/api test`), or run a built-in command in a package with `vp -C apps/web build`. Other root scripts: `preview`, `db:migrate` and `deploy:check` (a credential-free `cf deploy --dry-run` of every Build Output).
 
 ## pnpm and Vite+ conventions
 
@@ -47,7 +46,7 @@ Target one package with `vp run --filter @saldo/<name> <script>` (for example `v
 - Type checking stays strict in two layers: `tsc --noEmit` per package (`tsconfig.base.json` is the shared base) and the type-aware lint in `vp check`. Both must pass.
 - `@saldo/domain` is consumed as TypeScript source. Keep it free of React, Worker and Node APIs, and use `.js` extensions in its relative imports because the bridge container type-checks it under NodeNext resolution.
 - The bridge container image runs one bundle produced by `vp pack` (`apps/bridge/dist/container.mjs`, with domain code and zod inlined). The Docker build context is the repository root, filtered by an allow-list `.dockerignore`; add a file there before the image needs it.
-- CI and deployment configuration are covered by `tests/ci-*.test.ts` and `tests/deployment.test.ts`. Change the workflow, Wrangler configs, `deployment/` or `scripts/ci` together with those tests.
+- CI and deployment configuration are covered by `tests/ci-*.test.ts` and `tests/deployment.test.ts`. Change the workflow, a `cloudflare.config.ts` or `scripts/ci` together with those tests.
 
 ## Backend architecture (apps/api)
 
@@ -97,7 +96,7 @@ More rules:
 
 ## Frontend (apps/web)
 
-apps/web is its own Cloudflare Worker (`saldo-web`, `apps/web/wrangler.jsonc`): React 19 Server Components with streaming SSR through `@vitejs/plugin-rsc` and `@cloudflare/vite-plugin`, styled with Tailwind CSS v4. It stores nothing; all data comes from the API Worker over the `API` service binding. `vp build` writes the Worker to `dist/rsc` (SSR in `dist/rsc/ssr`) and the static assets to `dist/client`.
+apps/web is its own Cloudflare Worker (`saldo-web`, `apps/web/cloudflare.config.ts`): React 19 Server Components with streaming SSR through `@vitejs/plugin-rsc` and `@cloudflare/vite-plugin`, styled with Tailwind CSS v4. It stores nothing; all data comes from the API Worker over the `API` service binding. `cf build` writes its Build Output to `.cloudflare/output/v0/workers/default`: the Worker in `bundle` (SSR in `bundle/ssr`) and the static assets in `assets`.
 
 | Path                     | Contents                                                                                                                                  |
 | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
@@ -136,4 +135,12 @@ apps/web is its own Cloudflare Worker (`saldo-web`, `apps/web/wrangler.jsonc`): 
 
 ## Deployment
 
-<!-- Filled in by the deployment layer. -->
+Saldo builds and deploys with the Cloudflare CLI, `cf` (pinned in the catalog), never Wrangler. [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) has the full pipeline, the owner setup and the gaps `cf` cannot cover yet.
+
+- **One cf project per Worker.** `apps/api`, `apps/web` and `apps/bridge` each have a `cloudflare.config.ts` (`cf/config` builders). Never add a `wrangler.jsonc`, a Wrangler dependency or `wrangler.config.ts`. Run `cf` through the package's scripts or `pnpm exec cf` in the app directory. The root `cloudflare.config.ts` throws on purpose; never run `cf dev`, `cf build`, `cf deploy` or `cf init` in a directory without a configuration, because `cf` would rewrite the project.
+- **Build.** Every Worker builds with Vite and `@cloudflare/vite-plugin` (the 2.0 beta that `cf` uses). Never declare `vite` itself in a Worker package: `cf` would then run `npx vite build` and download an unlocked Vite. `cf build` writes `.cloudflare/output/v0/`; deploys upload that Build Output with `--prebuilt --mode production`.
+- **Configuration.** Every Worker keeps `workersDev: false`, `previewUrls: false`, observability off, and throws for Worker Previews. Configurations declare no routes or custom domains; domains are owner-managed. Keep account and resource IDs out of source: release builds (`SALDO_RELEASE=production`) read them from the protected GitHub Environment and refuse to build without them, and other builds use placeholders that fail closed. A new binding also goes into `expectedBindings` in `scripts/ci/deployment.ts`, or the deploy job refuses the release.
+- **D1.** Migrations are additive and numbered. Apply them with `cf d1 migrations apply <DATABASE_ID> --dir migrations` (remote by default; `pnpm db:migrate` applies them locally). `cf` takes database IDs (v4 UUIDs), not names.
+- **Secrets** are never in configuration, vars, URLs or command-line arguments. Set them with `cf workers secrets bulk --worker <name> --file <owner-only JSON>`; `cf` keeps them across deploys.
+- **Pipeline.** Pull requests: check, additive-migration policy, `pnpm deploy:check`, image smoke test, with no secrets. `main`: the same, then a release build, `prepare` (Build Output, live settings, D1 recovery point), `migrate`, deploy and `verify` (`scripts/ci/deployment.ts`). Releases never provision resources (`--no-provision`).
+- **Gaps.** Live logs need `npx wrangler@<version> tail <worker>`, run by the owner only. Do not add Wrangler back for anything else.

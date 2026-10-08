@@ -19,7 +19,7 @@ Cloudflare Container disk is ephemeral. The OAuth vault is deliberately stored i
 
 These steps create persistent access and deploy billable infrastructure. The owner must perform them in a trusted local terminal after reviewing the scopes and Cloudflare costs. Do not paste keys, tokens, credential files, or authorization URLs into a chat or an issue. Never ask an assistant to read or transmit them.
 
-Prerequisites: Node 24, dependencies installed with `pnpm install` from the repository root, a Docker-compatible engine for Cloudflare image builds, an authenticated Wrangler session, Cloudflare Workers/Containers availability, and an eligible ChatGPT account. Use the same Saldo source for local authorization and the remote runtime.
+Prerequisites: Node 24, dependencies installed with `pnpm install` from the repository root, a Docker-compatible engine for Cloudflare image builds, an authenticated `cf` session (`cf auth login`), Cloudflare Workers/Containers availability, and an eligible ChatGPT account. Use the same Saldo source for local authorization and the remote runtime.
 
 ### 1. Create protected local state
 
@@ -49,41 +49,48 @@ Reauthorization reuses that registration and this computer's stable host ID. If 
 
 ### 2. Install private runtime secrets
 
-Generate a separate random bridge secret into an owner-only file using a trusted local password manager or local cryptographic utility. It must be 43–128 base64url characters (a randomly generated 32-byte base64url value is sufficient). Use the same value in the application Worker and the bridge Worker. Do not put it in Wrangler variables, browser configuration, a URL, or source control.
+Generate a separate random bridge secret using a trusted local password manager or local cryptographic utility. It must be 43–128 base64url characters (a randomly generated 32-byte base64url value is sufficient). Use the same value in the application Worker and the bridge Worker. Do not put it in Worker variables, browser configuration, a URL, a command-line argument, or source control.
 
-The following are **user-run commands**, not automatic setup:
+`cf` sets secrets from a JSON Merge Patch file (see [the deployment guide](DEPLOYMENT.md#secrets)). Write two owner-only files outside the repository (`chmod 600`):
+
+- `/private/path/app-secrets.json`: `{"secrets":{"AI_BRIDGE_SECRET":{"name":"AI_BRIDGE_SECRET","type":"secret_text","text":"<bridge secret>"}}}`
+- `/private/path/bridge-secrets.json`: the same `AI_BRIDGE_SECRET` entry plus `"SIWC_STATE_KEY":{"name":"SIWC_STATE_KEY","type":"secret_text","text":"<contents of ~/.config/saldo/state.key>"}`
+
+The following are **user-run commands**, not automatic setup. Run them from the repository root:
 
 ```sh
-pnpm exec wrangler secret put AI_BRIDGE_SECRET --config apps/api/wrangler.jsonc < /private/path/bridge-secret
-pnpm exec wrangler secret put AI_BRIDGE_SECRET --config apps/bridge/wrangler.jsonc < /private/path/bridge-secret
-pnpm exec wrangler secret put SIWC_STATE_KEY --config apps/bridge/wrangler.jsonc < ~/.config/saldo/state.key
+pnpm --filter @saldo/api exec cf workers secrets bulk --worker saldo --file /private/path/app-secrets.json
+pnpm --filter @saldo/bridge exec cf workers secrets bulk --worker saldo-ai-bridge --file /private/path/bridge-secrets.json
 ```
 
-Use the overridden key path if applicable. Initial secret installation may require creating/deploying the Worker first; follow Wrangler's prompt only for the intended private Worker in your account. Keep app Access settings and owner subject correct before enabling the application. Runtime secret creation and any OAuth/cloud login are owner actions.
+Securely remove both files afterwards. Use the overridden key path if applicable. A secret can only be set on a Worker that exists; deploy it first. Keep app Access settings and owner subject correct before enabling the application. Runtime secret creation and any OAuth/cloud login are owner actions.
 
 ### 3. Deploy the bridge and transfer the selected registration
 
-Review `apps/bridge/wrangler.jsonc`: the service is `saldo-ai-bridge`, with one Container attached to the `SaldoAI` Durable Object. The current image uses the supported `Container` class with its default scheduling policy. Do not switch its scheduling policy to `durable_object` without porting to Cloudflare's direct Container API.
+Review `apps/bridge/cloudflare.config.ts`: the service is `saldo-ai-bridge`, with one Container attached to the `SaldoAI` Durable Object. The current image uses the supported `Container` class with its default scheduling policy. Do not switch its scheduling policy to `durable_object` without porting to Cloudflare's direct Container API.
+
+Merging to `main` deploys it. To deploy it by hand instead (Docker required), build it and deploy the Build Output:
 
 ```sh
-pnpm exec wrangler deploy --config apps/bridge/wrangler.jsonc
+pnpm --filter @saldo/bridge run build
+pnpm --filter @saldo/bridge exec cf deploy --prebuilt --mode production --no-provision --containers-rollout immediate
 ```
 
-Bind the app's `AI` service to `saldo-ai-bridge` in the application Wrangler configuration. Use a service binding, not a public bridge URL. Do not add a route, workers.dev endpoint, preview URL, or public container port.
+The app's `AI` service binding to `saldo-ai-bridge` is declared in `apps/api/cloudflare.config.ts`. Use a service binding, not a public bridge URL. Do not add a route, workers.dev endpoint, preview URL, or public container port.
 
 Export a freshly validated registration:
 
 ```sh
 pnpm --filter @saldo/bridge run bootstrap export ~/.config/saldo/transfer.enc.json
-pnpm exec wrangler secret bulk ~/.config/saldo/transfer.enc.json.secrets.json --config apps/bridge/wrangler.jsonc
+pnpm --filter @saldo/bridge exec cf workers secrets bulk --worker saldo-ai-bridge --file ~/.config/saldo/transfer.enc.json.secrets.json
 ```
 
-The helper also writes a protected `.secrets.json` file containing only encrypted bundle chunks and their count. Each chunk stays below Cloudflare’s 5KB secret-value limit; Wrangler imports them together. The bundle is authenticated-encrypted with the state key and has a 30-minute initial import window. Open the owner-authenticated Saldo app and refresh its connection status. The first status/chat request imports the selected registration into durable storage. The app reports connected only after the vault is usable. Never infer import success merely from a successful secret upload.
+The helper also writes a protected `.secrets.json` file containing only encrypted bundle chunks and their count, already in `cf`'s bulk secret format. Each chunk stays below Cloudflare’s 5KB secret-value limit; `cf` imports them together as one version. The bundle is authenticated-encrypted with the state key and has a 30-minute initial import window. Open the owner-authenticated Saldo app and refresh its connection status. The first status/chat request imports the selected registration into durable storage. The app reports connected only after the vault is usable. Never infer import success merely from a successful secret upload.
 
-After the app reports connected, remove all temporary import secrets together using the generated cleanup file (its values are null, which Wrangler bulk interprets as deletion):
+After the app reports connected, remove all temporary import secrets together using the generated cleanup file (its values are null, which the bulk API treats as deletion):
 
 ```sh
-pnpm exec wrangler secret bulk ~/.config/saldo/transfer.enc.json.cleanup.json --config apps/bridge/wrangler.jsonc
+pnpm --filter @saldo/bridge exec cf workers secrets bulk --worker saldo-ai-bridge --file ~/.config/saldo/transfer.enc.json.cleanup.json
 ```
 
 This removes `SIWC_BOOTSTRAP_PARTS` and all chunks generated for that bundle. If a prior import used more chunks, remove any leftover higher-numbered chunk secrets too; they are ignored and hold only encrypted data. Securely remove the transfer/import/cleanup files using your normal operating-system process. Keep your local protected account mapping for reauthorization; it will become stale as the remote runtime rotates tokens. The local helper never performs background refresh or inference. Let the remote runtime be the only refresh owner.

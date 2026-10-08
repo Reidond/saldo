@@ -18,7 +18,7 @@ This is a pre-release source deliverable, not a deployed or production-accepted 
 - Main Worker deployment dry-run/bundling (no deployment).
 - Bridge Worker-only dry-run with container rollout disabled (no deployment).
 - Node bridge smoke checks using synthetic credentials: unauthorized requests 401, malformed requests 400, nonexistent route 404, no provider request.
-- npm audit reports 0 known vulnerabilities including development dependencies at the time checked. The patched sharp override addresses the transitive Wrangler/Miniflare advisory.
+- npm audit reports 0 known vulnerabilities including development dependencies at the time checked. The patched sharp override addresses the transitive Miniflare advisory.
 
 ## Not verified / blocked
 

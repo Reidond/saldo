@@ -10,16 +10,15 @@ Local implementation. Not deployed. Real AI requires an explicitly configured pr
 
 ## Repository layout
 
-Saldo is a [pnpm](https://pnpm.io) workspace that uses [Vite+](https://viteplus.dev) (`vp`) for development, builds, tests, linting and formatting.
+Saldo is a [pnpm](https://pnpm.io) workspace that uses [Vite+](https://viteplus.dev) (`vp`) for development, builds, tests, linting and formatting, and the [Cloudflare CLI](https://developers.cloudflare.com/cf/) (`cf`) to build and deploy its Workers.
 
-- `apps/api` (`@saldo/api`): the Cloudflare Worker that authenticates the owner, serves `/api` and the web build as protected static assets. D1 migrations live in `apps/api/migrations`.
-- `apps/web` (`@saldo/web`): the React client built with Vite.
+- `apps/api` (`@saldo/api`): the API Worker that authenticates the owner and serves `/api`. D1 migrations live in `apps/api/migrations`.
+- `apps/web` (`@saldo/web`): the web Worker, React Server Components with SSR and the protected static assets. It calls the API over a service binding.
 - `apps/bridge` (`@saldo/bridge`): the private AI bridge Worker and its Node container.
 - `packages/domain` (`@saldo/domain`): framework-free schemas and finance logic shared by the apps.
-- `deployment` (`@saldo/deployment`): the isolated Cloudflare `cf` CLI build definitions.
 - `scripts/ci`, `tests`: CI safety scripts and repository-level configuration tests.
 
-Contributor and agent conventions are in [AGENTS.md](AGENTS.md).
+Each app has its own `cloudflare.config.ts`. Contributor and agent conventions are in [AGENTS.md](AGENTS.md).
 
 ## Run locally
 
@@ -30,7 +29,7 @@ pnpm install
 pnpm dev
 ```
 
-Vite opens the synthetic/local UI on localhost:5173. The API proxy points at localhost:8787. A local UI is not a production authentication boundary. For backend development, build first (`pnpm build`), apply the local migration (`pnpm db:migrate`), then run `pnpm dev:api`. The Worker deliberately fails closed until Cloudflare Access verification is configured, even in development.
+`pnpm dev` serves the web app with synthetic, fictional data on localhost:5173; it is not a production authentication boundary. For backend development, apply the local migrations (`pnpm db:migrate`), then run `pnpm dev:api` (`cf dev` on localhost:8787). The API deliberately fails closed until Cloudflare Access verification is configured, even in development.
 
 ```sh
 pnpm build
@@ -40,7 +39,7 @@ pnpm typecheck
 pnpm check
 ```
 
-`pnpm check` runs everything CI runs: formatting, lint and type-aware checks (`vp check`), strict TypeScript, all tests and all builds, including the bridge container bundle. `pnpm format` applies the formatter.
+`pnpm check` runs everything CI runs: formatting, lint and type-aware checks (`vp check`), strict TypeScript, all tests and a `cf build` of every Worker. The bridge build also builds its container image, so it needs Docker. `pnpm format` applies the formatter.
 
 ## Data and review semantics
 
@@ -55,14 +54,10 @@ pnpm check
 
 ## Private Cloudflare deployment
 
-See [deployment guide](docs/DEPLOYMENT.md) and [ChatGPT setup](docs/SIWC.md). Before exposing any instance, configure an owner-only Cloudflare Access application and its verified audience, issuer domain and subject. Access email headers alone are never trusted. The application verifies the signed Access JWT and exact owner subject on every protected request; all queries are scoped by subject.
+See the [deployment guide](docs/DEPLOYMENT.md) and the [ChatGPT setup](docs/SIWC.md). Before exposing any instance, configure an owner-only Cloudflare Access application and its verified audience, issuer domain and subject. Access email headers alone are never trusted. The application verifies the signed Access JWT and exact owner subject on every protected request; all queries are scoped by subject.
 
-This repository includes no tokens, account IDs, real subscriptions, imported screenshots, or private data. Keep configuration in Cloudflare secrets and protected runtime storage. GitHub publication and private deployment are separate actions.
-
-## Cloudflare `cf` CLI
-
-Use the isolated `deployment/` workspace package to retain the protected Worker while Vite builds the frontend. Run `pnpm run cf:build:app`; `pnpm run cf:build:bridge` also requires Docker. See [the cf deployment guide](docs/CF-DEPLOYMENT.md) for verified behavior, private configuration, legacy Wrangler support and pending deployment checks. Do not run `cf init` in the root or in any app directory.
+This repository includes no tokens, account IDs, real subscriptions, imported screenshots, or private data. Keep configuration in Cloudflare secrets, the protected GitHub Environment and protected runtime storage. GitHub publication and private deployment are separate actions.
 
 ## Continuous delivery
 
-[GitHub Actions delivery](docs/GITHUB-DEPLOYMENT.md) checks PRs without production secrets and deploys the private bridge and app after successful main-branch checks. The protected `saldo-production` Environment holds the owner-supplied token and resource identifiers. Database changes are additive-only and preceded by a verified D1 recovery point; existing Access settings, secrets and domain routing are preserved.
+GitHub Actions checks pull requests without production secrets and deploys with `cf` after successful `main` checks. The protected `saldo-production` Environment holds the owner-supplied token and identifiers. Database changes are additive-only and preceded by a verified D1 recovery point; existing secrets and domain routing are preserved. Details, and the tasks `cf` cannot do yet, are in the [deployment guide](docs/DEPLOYMENT.md).
