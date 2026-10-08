@@ -20,6 +20,17 @@ This is a pre-release source deliverable, not a deployed or production-accepted 
 - Node bridge smoke checks using synthetic credentials: unauthorized requests 401, malformed requests 400, nonexistent route 404, no provider request.
 - npm audit reports 0 known vulnerabilities including development dependencies at the time checked. The patched sharp override addresses the transitive Miniflare advisory.
 
+## Deployment smoke checks (every release, in CI)
+
+`scripts/ci/deployment.ts verify` runs after each deploy from `main` (plan task 1.8), and the run fails if any check fails:
+
+- Anonymous `GET /` and `GET /api/status` on the app origin get the Access login redirect to the team domain, or 401.
+- `saldo-api`, `saldo-web` and `saldo-ai-bridge` have workers.dev and Preview URLs disabled, and their workers.dev URLs answer 404. `saldo-api` and the bridge have no custom domain, so the API is reachable only through the web's service binding.
+- Live bindings match the release, and pre-existing secrets and the Durable Object namespace survive the deploy.
+- Before upload, no deployed code or asset contains the API token, the Access audience or the owner subject, and no local secret file is uploaded.
+
+The first production run of these checks has not happened yet; owner login and live ChatGPT acceptance stay manual.
+
 ## Not verified / blocked
 
 - Desktop/mobile visual browser QA and screenshots. Local Chromium could not create required OS sockets in this execution environment, including after a reviewed escalation; the supported cloud browser could not reach executor localhost. It also rejected in-memory data URLs. No security restriction was bypassed and no public preview was deployed. DOM tests do not replace visual QA.
