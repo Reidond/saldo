@@ -324,3 +324,30 @@ export function Initial({
     </span>
   );
 }
+
+/**
+ * Cross-fades two icons in one slot (scale 0.25→1, blur 4px→0, opacity),
+ * keeping both in the DOM so the swap animates in both directions.
+ */
+export function IconSwap({
+  active,
+  from,
+  to,
+}: {
+  active: boolean;
+  from: ReactNode;
+  to: ReactNode;
+}) {
+  const layer =
+    "grid place-items-center transition-[opacity,filter,scale] duration-300 ease-snappy motion-reduce:transition-opacity";
+  const shown = "scale-100 opacity-100 blur-0";
+  const hidden = "scale-[0.25] opacity-0 blur-[4px]";
+  return (
+    <span className="relative grid place-items-center" aria-hidden="true">
+      <span className={cx("absolute inset-0", layer, active ? shown : hidden)}>
+        {to}
+      </span>
+      <span className={cx(layer, active ? hidden : shown)}>{from}</span>
+    </span>
+  );
+}

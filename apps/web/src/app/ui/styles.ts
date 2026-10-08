@@ -7,7 +7,7 @@ type ButtonVariant = "primary" | "secondary" | "ghost" | "danger";
 type ButtonSize = "md" | "sm" | "icon" | "icon-sm";
 
 const buttonBase =
-  "inline-flex shrink-0 items-center justify-center gap-2 rounded-lg font-medium whitespace-nowrap select-none " +
+  "inline-flex shrink-0 items-center justify-center gap-2 font-medium whitespace-nowrap select-none " +
   "transition-[background-color,color,box-shadow,scale] duration-150 ease-out " +
   "motion-safe:active:not-disabled:scale-[0.96] disabled:cursor-not-allowed disabled:opacity-50 " +
   "aria-disabled:pointer-events-none aria-disabled:opacity-50";
@@ -33,14 +33,18 @@ export function buttonClass({
   variant = "secondary",
   size = "md",
   icon,
+  radius = "lg",
 }: {
   variant?: ButtonVariant;
   size?: ButtonSize;
+  /** `xl` where the button sits 8px inside a 20px container (concentric). */
+  radius?: "lg" | "xl";
   /** A leading icon takes 2px less padding on its side, for optical balance. */
   icon?: "leading" | "trailing";
 } = {}) {
   return cx(
     buttonBase,
+    radius === "xl" ? "rounded-xl" : "rounded-lg",
     buttonVariants[variant],
     buttonSizes[size],
     icon === "leading" && size === "md" && "ps-3.5",

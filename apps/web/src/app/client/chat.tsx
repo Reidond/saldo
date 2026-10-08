@@ -254,11 +254,15 @@ export function Chat({ aiAvailable, subscriptions, locale, save }: ChatProps) {
 
   return (
     <div className="grid gap-6 lg:grid-cols-[13.5rem_1fr]">
-      <ConversationList
-        conversations={conversations}
-        activeId={active?.id ?? null}
-        disabled={busy}
-      />
+      {aiAvailable || conversations.length > 0 ? (
+        <ConversationList
+          conversations={conversations}
+          activeId={active?.id ?? null}
+          disabled={busy}
+        />
+      ) : (
+        <div className="max-lg:hidden" />
+      )}
 
       <section
         aria-label="Conversation"
@@ -278,7 +282,7 @@ export function Chat({ aiAvailable, subscriptions, locale, save }: ChatProps) {
                   <PenLine
                     className="size-4"
                     absoluteStrokeWidth
-                    strokeWidth={1.5}
+                    strokeWidth={2}
                     aria-hidden="true"
                   />
                   Add manually
@@ -290,7 +294,7 @@ export function Chat({ aiAvailable, subscriptions, locale, save }: ChatProps) {
                   <FileUp
                     className="size-4"
                     absoluteStrokeWidth
-                    strokeWidth={1.5}
+                    strokeWidth={2}
                     aria-hidden="true"
                   />
                   Import CSV
@@ -314,7 +318,7 @@ export function Chat({ aiAvailable, subscriptions, locale, save }: ChatProps) {
               }}
             />
           ) : (
-            <ol className="flex flex-col gap-5 [&>li]:scroll-mt-20">
+            <ol className="flex flex-col gap-5 [&>li]:scroll-mt-20 [&>li]:transition-[opacity,translate] [&>li]:duration-200 [&>li]:ease-out motion-safe:[&>li]:starting:translate-y-1 [&>li]:starting:opacity-0">
               {active?.messages.map((m) => (
                 <li key={m.id}>
                   <MessageBubble message={m} />
@@ -362,11 +366,11 @@ export function Chat({ aiAvailable, subscriptions, locale, save }: ChatProps) {
               {error}
             </p>
           )}
-          <div className="rounded-2xl bg-surface p-2 shadow-pop">
+          <div className="rounded-[20px] bg-surface p-2 shadow-pop">
             {attachments.length > 0 && (
               <ul
                 aria-label="Attached images"
-                className="flex gap-2 overflow-x-auto p-1 pb-2"
+                className="flex gap-2 overflow-x-auto pb-2"
               >
                 {attachments.map((a) => (
                   <li
@@ -376,7 +380,7 @@ export function Chat({ aiAvailable, subscriptions, locale, save }: ChatProps) {
                     <img
                       src={a.dataUrl}
                       alt=""
-                      className="size-11 rounded-lg object-cover"
+                      className="size-11 rounded-md object-cover"
                     />
                     <span className="max-w-32 min-w-0 text-xs">
                       <span className="block truncate font-medium">
@@ -453,12 +457,13 @@ export function Chat({ aiAvailable, subscriptions, locale, save }: ChatProps) {
                   variant: "ghost",
                   size: "sm",
                   icon: "leading",
+                  radius: "xl",
                 })}
               >
                 <ImagePlus
                   className="size-4.5"
                   absoluteStrokeWidth
-                  strokeWidth={1.5}
+                  strokeWidth={2}
                   aria-hidden="true"
                 />
                 Add image
@@ -468,7 +473,11 @@ export function Chat({ aiAvailable, subscriptions, locale, save }: ChatProps) {
                 disabled={!canSend}
                 onClick={() => void send()}
                 aria-label="Send for review"
-                className={buttonClass({ variant: "primary", size: "icon-sm" })}
+                className={buttonClass({
+                  variant: "primary",
+                  size: "icon-sm",
+                  radius: "xl",
+                })}
               >
                 <ArrowUp
                   className="size-4.5"
@@ -515,7 +524,7 @@ function ConversationList({
         <MessageCirclePlus
           className="size-4"
           absoluteStrokeWidth
-          strokeWidth={1.5}
+          strokeWidth={2}
           aria-hidden="true"
         />
         New conversation
@@ -548,7 +557,7 @@ function ConversationList({
                   aria-current={c.id === activeId ? "true" : undefined}
                   onClick={() => draftsStore.selectConversation(c.id)}
                   className={cx(
-                    "w-full truncate rounded-lg px-3 py-2 text-start text-sm transition-colors duration-150 ease-out",
+                    "w-full truncate rounded-lg px-3 py-2 text-start text-sm transition-[background-color,color] duration-150 ease-out",
                     c.id === activeId
                       ? "bg-surface font-medium shadow-card"
                       : "text-ink-muted hover:bg-surface-hover hover:text-ink",

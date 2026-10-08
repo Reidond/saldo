@@ -116,12 +116,15 @@ function Dashboard({
 
   return (
     <div className="grid gap-4 lg:grid-cols-3">
-      <Card className="p-5 lg:col-span-2" aria-labelledby="recurring-title">
+      <Card
+        className="flex flex-col p-5 lg:col-span-2"
+        aria-labelledby="recurring-title"
+      >
         <h2 id="recurring-title" className="text-sm font-medium text-ink-muted">
           Confirmed recurring cost
         </h2>
         {totals.currencies.length ? (
-          <ul className="mt-3 grid grid-cols-2 gap-x-6 gap-y-4 xl:grid-cols-3">
+          <ul className="mt-3 mb-5 grid grid-cols-2 gap-x-6 gap-y-4 xl:grid-cols-3">
             {totals.currencies.map((total) => (
               <li key={total.currency} className="min-w-0">
                 <p className="text-xs font-semibold tracking-wide text-ink-muted">
@@ -141,12 +144,12 @@ function Dashboard({
             ))}
           </ul>
         ) : (
-          <p className="mt-3 text-[15px] text-ink-muted">
+          <p className="mt-3 mb-5 text-[15px] text-ink-muted">
             No confirmed recurring costs yet. Records with an unknown amount,
             currency or billing cycle aren’t counted.
           </p>
         )}
-        <p className="mt-5 border-t border-line pt-4 text-sm text-ink-muted">
+        <p className="mt-auto border-t border-line pt-4 text-sm text-ink-muted">
           {active} active
           {totals.excluded > 0 &&
             ` · ${totals.excluded} not counted until confirmed`}
@@ -192,7 +195,7 @@ function Dashboard({
           <ArrowRight
             className="size-4"
             absoluteStrokeWidth
-            strokeWidth={1.5}
+            strokeWidth={2}
             aria-hidden="true"
           />
         </a>
@@ -238,7 +241,7 @@ function Dashboard({
                 <li key={subscription.id}>
                   <a
                     href={subscriptionHref(subscription.id)}
-                    className="flex items-center gap-3 rounded-lg p-2.5 transition-colors duration-150 ease-out hover:bg-surface-hover"
+                    className="flex items-center gap-3 rounded-lg p-2.5 transition-[background-color,color] duration-150 ease-out hover:bg-surface-hover"
                   >
                     <ServiceAvatar name={subscription.name} size="sm" />
                     <span className="min-w-0 flex-1">
@@ -306,7 +309,7 @@ function RenewalRow({
     <li>
       <a
         href={subscriptionHref(s.id)}
-        className="flex items-center gap-3 rounded-lg p-2.5 transition-colors duration-150 ease-out hover:bg-surface-hover"
+        className="flex items-center gap-3 rounded-lg p-2.5 transition-[background-color,color] duration-150 ease-out hover:bg-surface-hover"
       >
         <span className="grid w-11 shrink-0 place-items-center rounded-lg bg-surface-sunken py-1 text-center shadow-[inset_0_0_0_1px_var(--line)]">
           <span className="text-[10px] font-semibold tracking-wide text-ink-muted uppercase">
@@ -437,7 +440,7 @@ function Onboarding({ aiConnected }: { aiConnected: boolean }) {
                 <FileUp
                   className="size-4.5"
                   absoluteStrokeWidth
-                  strokeWidth={1.5}
+                  strokeWidth={2}
                   aria-hidden="true"
                 />
                 Import a CSV
@@ -447,7 +450,7 @@ function Onboarding({ aiConnected }: { aiConnected: boolean }) {
                   <MessageCircle
                     className="size-4.5"
                     absoluteStrokeWidth
-                    strokeWidth={1.5}
+                    strokeWidth={2}
                     aria-hidden="true"
                   />
                   Add from a screenshot

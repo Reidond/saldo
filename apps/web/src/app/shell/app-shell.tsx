@@ -169,13 +169,13 @@ function TabLink({
       href={item.href}
       aria-current={active ? "page" : undefined}
       className={cx(
-        "relative flex min-h-15 flex-col items-center justify-center gap-0.5 text-[11px] font-medium transition-colors duration-150 ease-out",
+        "relative flex min-h-15 flex-col items-center justify-center gap-0.5 text-[11px] font-medium transition-[background-color,color] duration-150 ease-out",
         active ? "text-brand" : "text-ink-muted",
       )}
     >
       <span
         className={cx(
-          "grid h-7 w-12 place-items-center rounded-full transition-colors duration-150 ease-out",
+          "grid h-7 w-12 place-items-center rounded-full transition-[background-color,color] duration-150 ease-out",
           active && "bg-brand-soft",
         )}
       >
@@ -227,7 +227,7 @@ async function AiStatus() {
   return (
     <a
       href="/settings#chatgpt"
-      className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-xs text-ink-muted transition-colors duration-150 ease-out hover:bg-surface-hover hover:text-ink"
+      className="flex items-center gap-2.5 rounded-lg px-3 py-2 text-xs text-ink-muted transition-[background-color,color] duration-150 ease-out hover:bg-surface-hover hover:text-ink"
     >
       <span
         aria-hidden="true"
@@ -259,7 +259,7 @@ async function AccountBlock() {
   const me = await loadMe().catch(() => null);
   const name = displayName(me);
   return (
-    <div className="flex items-center gap-3 rounded-xl bg-surface p-2 ps-3 shadow-card">
+    <div className="flex items-center gap-3 rounded-2xl bg-surface p-2 ps-3 shadow-card">
       <Initial name={name} size="md" />
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium">{name}</p>
@@ -271,7 +271,7 @@ async function AccountBlock() {
         href={SIGN_OUT_HREF}
         aria-label="Sign out"
         title="Sign out of Saldo and other Access apps"
-        className="grid size-9 place-items-center rounded-lg text-ink-muted transition-colors duration-150 ease-out hover:bg-surface-hover hover:text-ink"
+        className="grid size-9 place-items-center rounded-lg text-ink-muted transition-[background-color,color] duration-150 ease-out hover:bg-surface-hover hover:text-ink"
       >
         <LogOut
           className="size-4.5"
@@ -290,5 +290,5 @@ async function MobileAccount() {
 }
 
 function AccountSkeleton() {
-  return <div className="h-[52px] rounded-xl bg-surface-sunken" />;
+  return <div className="h-[52px] rounded-2xl bg-surface-sunken" />;
 }

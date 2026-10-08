@@ -41,7 +41,7 @@ export function BackLink({
   return (
     <a
       href={href}
-      className="-ms-2 mb-4 inline-flex h-9 items-center gap-1.5 rounded-lg ps-1.5 pe-2.5 text-sm text-ink-muted transition-colors duration-150 ease-out hover:bg-surface-hover hover:text-ink"
+      className="-ms-2 mb-4 inline-flex h-9 items-center gap-1.5 rounded-lg ps-1.5 pe-2.5 text-sm text-ink-muted transition-[background-color,color] duration-150 ease-out hover:bg-surface-hover hover:text-ink"
     >
       <ArrowLeft
         className="size-4"
@@ -101,7 +101,7 @@ export async function SubscriptionPage({
             <Pencil
               className="size-4.5"
               absoluteStrokeWidth
-              strokeWidth={1.5}
+              strokeWidth={2}
               aria-hidden="true"
             />
             Edit
@@ -137,7 +137,7 @@ export async function SubscriptionPage({
         </Notice>
       )}
 
-      <div className="grid gap-4 lg:grid-cols-3">
+      <div className="grid items-start gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2" aria-labelledby="facts-title">
           <CardHeader id="facts-title" title="Current details" />
           <Facts s={s} today={today} preferences={preferences} />

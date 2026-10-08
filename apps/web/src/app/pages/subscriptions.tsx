@@ -54,7 +54,7 @@ export async function SubscriptionsPage({
             <FileUp
               className="size-4.5"
               absoluteStrokeWidth
-              strokeWidth={1.5}
+              strokeWidth={2}
               aria-hidden="true"
             />
             Import CSV
@@ -251,7 +251,7 @@ export async function SubscriptionsPage({
                     {shown.map((s) => (
                       <tr
                         key={s.id}
-                        className="relative border-b border-line transition-colors duration-150 ease-out last:border-0 hover:bg-surface-hover"
+                        className="relative border-b border-line transition-[background-color,color] duration-150 ease-out last:border-0 hover:bg-surface-hover"
                       >
                         <td className="py-3 ps-5">
                           <a
@@ -313,7 +313,7 @@ function SubscriptionCard({
     <li>
       <a
         href={subscriptionHref(s.id)}
-        className="flex gap-3 rounded-2xl bg-surface p-3.5 shadow-card transition-colors duration-150 ease-out active:bg-surface-hover"
+        className="flex gap-3 rounded-2xl bg-surface p-3.5 shadow-card transition-[background-color,color] duration-150 ease-out active:bg-surface-hover"
       >
         <ServiceAvatar name={s.name} />
         <span className="min-w-0 flex-1">

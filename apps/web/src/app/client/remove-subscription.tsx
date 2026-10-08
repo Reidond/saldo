@@ -30,7 +30,7 @@ export function RemoveSubscription({
         <Trash2
           className="size-4.5"
           absoluteStrokeWidth
-          strokeWidth={1.5}
+          strokeWidth={2}
           aria-hidden="true"
         />
         Remove

@@ -161,9 +161,9 @@ export function CsvImport({
       <button
         type="button"
         onClick={() => input.current?.click()}
-        className="flex w-full items-center gap-4 rounded-xl bg-surface-sunken p-4 text-start shadow-[inset_0_0_0_1px_var(--line)] transition-[background-color,box-shadow] duration-150 ease-out hover:bg-surface-hover hover:shadow-[inset_0_0_0_1px_var(--line-strong)]"
+        className="flex w-full items-center gap-3 rounded-2xl bg-surface-sunken p-2 pe-4 text-start shadow-[inset_0_0_0_1px_var(--line)] transition-[background-color,box-shadow] duration-150 ease-out hover:bg-surface-hover hover:shadow-[inset_0_0_0_1px_var(--line-strong)]"
       >
-        <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-surface text-brand shadow-card">
+        <span className="grid size-10 shrink-0 place-items-center rounded-lg bg-surface text-brand shadow-card">
           <FileUp
             className="size-5"
             absoluteStrokeWidth

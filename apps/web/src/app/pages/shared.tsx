@@ -40,7 +40,7 @@ export function LoadError({ error, what }: { error: ApiError; what: string }) {
           <RotateCw
             className="size-4"
             absoluteStrokeWidth
-            strokeWidth={1.5}
+            strokeWidth={2}
             aria-hidden="true"
           />
           {expired ? "Reload to sign in" : "Try again"}

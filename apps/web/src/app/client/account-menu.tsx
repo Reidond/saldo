@@ -51,7 +51,7 @@ export function AccountMenu({
         id={menuId}
         hidden={!open}
         className={cx(
-          "absolute top-full right-0 z-40 mt-1 w-64 origin-top-right rounded-xl bg-surface p-1.5 shadow-pop",
+          "absolute top-full right-0 z-40 mt-1 w-64 origin-top-right rounded-[14px] bg-surface p-1.5 shadow-pop",
           "transition-[opacity,scale] duration-150 ease-out starting:scale-[0.96] starting:opacity-0",
         )}
       >

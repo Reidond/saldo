@@ -87,7 +87,7 @@ export async function ReviewPage() {
                   <li key={subscription.id}>
                     <a
                       href={`${subscriptionHref(subscription.id)}/edit`}
-                      className="flex gap-3 rounded-lg p-2.5 transition-colors duration-150 ease-out hover:bg-surface-hover"
+                      className="flex gap-3 rounded-lg p-2.5 transition-[background-color,color] duration-150 ease-out hover:bg-surface-hover"
                     >
                       <ServiceAvatar name={subscription.name} size="sm" />
                       <span className="min-w-0 flex-1">

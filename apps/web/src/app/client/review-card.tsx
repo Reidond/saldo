@@ -23,7 +23,7 @@ import {
 } from "../../lib/subscriptions";
 import type { ProposalResult } from "../../server/actions";
 import { subscriptionHref } from "../routes";
-import { ServiceAvatar } from "../ui/components";
+import { IconSwap, ServiceAvatar } from "../ui/components";
 import {
   buttonClass,
   cx,
@@ -112,7 +112,7 @@ export function ReviewCard({
     return (
       <div
         className={cx(
-          "flex items-center gap-3 rounded-xl bg-surface p-3 shadow-card",
+          "flex items-center gap-3 rounded-xl bg-surface p-3 shadow-card transition-opacity duration-150 ease-out starting:opacity-0",
           optimistic === "discarded" && "opacity-70",
         )}
       >
@@ -144,7 +144,7 @@ export function ReviewCard({
             <Undo2
               className="size-4"
               absoluteStrokeWidth
-              strokeWidth={1.5}
+              strokeWidth={2}
               aria-hidden="true"
             />
             Undo
@@ -188,21 +188,19 @@ export function ReviewCard({
           onClick={() => setEditing((value) => !value)}
           aria-label={editing ? "Close editor" : `Edit ${p.name || "draft"}`}
         >
-          {editing ? (
-            <X
-              className="size-4.5"
-              absoluteStrokeWidth
-              strokeWidth={1.5}
-              aria-hidden="true"
-            />
-          ) : (
-            <Pencil
-              className="size-4.5"
-              absoluteStrokeWidth
-              strokeWidth={1.5}
-              aria-hidden="true"
-            />
-          )}
+          <IconSwap
+            active={editing}
+            from={
+              <Pencil
+                className="size-4.5"
+                absoluteStrokeWidth
+                strokeWidth={1.5}
+              />
+            }
+            to={
+              <X className="size-4.5" absoluteStrokeWidth strokeWidth={1.5} />
+            }
+          />
         </button>
       </header>
 

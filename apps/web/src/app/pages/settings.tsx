@@ -74,7 +74,7 @@ export async function SettingsPage() {
               <LogOut
                 className="size-4.5"
                 absoluteStrokeWidth
-                strokeWidth={1.5}
+                strokeWidth={2}
                 aria-hidden="true"
               />
               Sign out
@@ -156,7 +156,7 @@ export async function SettingsPage() {
               <Download
                 className="size-4.5"
                 absoluteStrokeWidth
-                strokeWidth={1.5}
+                strokeWidth={2}
                 aria-hidden="true"
               />
               CSV
@@ -169,7 +169,7 @@ export async function SettingsPage() {
               <Download
                 className="size-4.5"
                 absoluteStrokeWidth
-                strokeWidth={1.5}
+                strokeWidth={2}
                 aria-hidden="true"
               />
               JSON

@@ -88,7 +88,7 @@ export function SubscriptionFilters({
           <button
             type="button"
             aria-label="Clear search"
-            className="absolute end-1 top-1/2 grid size-9 -translate-y-1/2 place-items-center rounded-md text-ink-muted hover:text-ink"
+            className="absolute end-1 top-1/2 grid size-9 -translate-y-1/2 place-items-center rounded text-ink-muted hover:text-ink"
             onClick={() => {
               setQuery("");
               clearTimeout(timer.current);
