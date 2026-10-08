@@ -54,7 +54,7 @@ pnpm check
 
 ## Private Cloudflare deployment
 
-See the [deployment guide](docs/DEPLOYMENT.md) and the [ChatGPT setup](docs/SIWC.md). Before exposing any instance, configure an owner-only Cloudflare Access application and its verified audience, issuer domain and subject. Access email headers alone are never trusted. The application verifies the signed Access JWT and exact owner subject on every protected request; all queries are scoped by subject.
+See the [deployment guide](docs/DEPLOYMENT.md) and the [ChatGPT setup](docs/SIWC.md). The planned Cloudflare Access login and in-app “Connect ChatGPT plan” design is in [docs/plans/chatgpt-connect-and-login.md](docs/plans/chatgpt-connect-and-login.md). Before exposing any instance, configure an owner-only Cloudflare Access application and its verified audience, issuer domain and subject. Access email headers alone are never trusted. The application verifies the signed Access JWT and exact owner subject on every protected request; all queries are scoped by subject.
 
 This repository includes no tokens, account IDs, real subscriptions, imported screenshots, or private data. Keep configuration in Cloudflare secrets, the protected GitHub Environment and protected runtime storage. GitHub publication and private deployment are separate actions.
 
