@@ -11,5 +11,13 @@
     "esModuleInterop": true,
     "types": ["@cloudflare/workers-types", "node"]
   },
-  "include": ["src", "server", "tests", "vite.config.ts", "bridge"]
+  "include": [
+    "src",
+    "server",
+    "tests",
+    "vite.config.ts",
+    "bridge",
+    "cloudflare.config.ts",
+    "deployment/*.ts"
+  ]
 }

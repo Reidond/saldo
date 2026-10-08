@@ -10,11 +10,16 @@
     "test": "vitest run",
     "lint": "eslint .",
     "preview": "vite preview --host 127.0.0.1",
-    "worker:dev": "wrangler dev",
-    "db:migrate": "wrangler d1 migrations apply saldo --local",
+    "worker:dev": "wrangler dev --config wrangler.jsonc",
+    "db:migrate": "wrangler d1 migrations apply saldo --local --config wrangler.jsonc",
     "format": "prettier --write src server bridge tests docs README.md",
     "check": "npm run typecheck && npm run lint && npm test && npm run build && npm run check:bridge",
-    "check:bridge": "tsc -p bridge/tsconfig.json && tsc -p bridge/tsconfig.node.json"
+    "check:bridge": "tsc -p bridge/tsconfig.json && tsc -p bridge/tsconfig.node.json",
+    "cf:setup": "npm ci --prefix deployment",
+    "cf:build:app": "npm run build && cd deployment && cf build --mode app",
+    "cf:build:bridge": "npm run check:bridge && cd deployment && cf build --mode bridge",
+    "cf:check:app": "npm run cf:build:app && cd deployment && cf deploy --dry-run --prebuilt --mode app",
+    "cf:check:bridge": "npm run cf:build:bridge && cd deployment && cf deploy --dry-run --prebuilt --mode bridge --containers-rollout none"
   },
   "dependencies": {
     "@cloudflare/containers": "^0.3.7",
@@ -33,6 +38,7 @@
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "@vitejs/plugin-react": "^6.1.2",
+    "cf": "1.0.0-beta.13",
     "eslint": "^9.0.0",
     "jsdom": "^30.1.2",
     "playwright": "^1.51.0",

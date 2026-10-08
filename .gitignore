@@ -12,3 +12,7 @@ bridge-dist/
 *.secrets.json
 *.cleanup.json
 *.bundle.json
+
+**/node_modules/
+**/.cloudflare/
+**/.wrangler/

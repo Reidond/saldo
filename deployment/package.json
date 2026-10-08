@@ -1,0 +1,12 @@
+{
+  "name": "saldo-deployment",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "cf": "1.0.0-beta.13",
+    "wrangler": "4.148.0"
+  },
+  "overrides": {
+    "sharp": "^0.35.5"
+  }
+}

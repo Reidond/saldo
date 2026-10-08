@@ -38,3 +38,7 @@ npm run typecheck
 See [deployment guide](docs/DEPLOYMENT.md) and [ChatGPT setup](docs/SIWC.md). Before exposing any instance, configure an owner-only Cloudflare Access application and its verified audience, issuer domain and subject. Access email headers alone are never trusted. The application verifies the signed Access JWT and exact owner subject on every protected request; all queries are scoped by subject.
 
 This repository includes no tokens, account IDs, real subscriptions, imported screenshots, or private data. Keep configuration in Cloudflare secrets and protected runtime storage. GitHub publication and private deployment are separate actions.
+
+## Cloudflare `cf` CLI
+
+Use the isolated `deployment/` package to retain the protected Worker while Vite builds the frontend. Run `npm run cf:setup`, then `npm run cf:build:app`; the bridge build also requires Docker. See [the cf deployment guide](docs/CF-DEPLOYMENT.md) for verified behavior, private configuration, legacy Wrangler support and pending deployment checks. Do not run `cf init` in the root or bridge source directory.
