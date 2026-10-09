@@ -34,8 +34,8 @@ export type Component = keyof typeof components;
 export const deployOrder: Component[] = ["bridge", "api", "web"];
 /**
  * The single app Worker that served pages and API before the split. Releases
- * never change it; it keeps the custom domain until the owner moves it to
- * saldo-web, and deleting it is a separate owner decision.
+ * never change it. Since the cutover it has no domain and stays as the
+ * rollback target; deleting it is a separate owner decision.
  */
 export const legacyWorker = "saldo";
 
@@ -133,12 +133,11 @@ function assertVars(
       );
   }
 }
+const isSecret = (binding: Binding) =>
+  ["secret_text", "secret_key"].includes(binding.type);
 function assertOnly(live: Settings, allowed: string[], label: string) {
   for (const b of live.bindings)
-    if (
-      !["secret_text", "secret_key"].includes(b.type) &&
-      !allowed.includes(b.name)
-    )
+    if (!isSecret(b) && !allowed.includes(b.name))
       throw new Error(`Unexpected ${label} binding; review before deployment`);
 }
 const bindingOf = (live: Settings, name: string) =>
@@ -200,12 +199,39 @@ export function validateLegacy(live: Settings, settings: ReleaseSettings) {
   ]);
   assertDatabase(live, settings);
 }
-export function validatePrivateEndpoints(value: unknown) {
+/**
+ * An API or web Worker the owner created ahead of its first release, because
+ * the per-Worker token cannot create Workers (see docs/DEPLOYMENT.md): no
+ * bindings except secrets, and an active version no release uploaded. It has
+ * no configuration a release could replace, so it counts as not deployed.
+ */
+export function isPlaceholder(live: Settings, activeMessage?: string) {
+  return (
+    live.bindings.every(isSecret) &&
+    !activeMessage?.startsWith(contentMessage(""))
+  );
+}
+/** Whether workers.dev and Preview URLs are both explicitly off. */
+export function privateEndpoints(value: unknown) {
   const v = value as Record<string, unknown>;
-  if (v?.enabled !== false || v?.previews_enabled !== false)
+  return v?.enabled === false && v?.previews_enabled === false;
+}
+export function validatePrivateEndpoints(value: unknown) {
+  if (!privateEndpoints(value))
     throw new Error(
       "Public Worker alternate endpoint is enabled or unverified",
     );
+}
+/** Workers without AI_BRIDGE_SECRET: AI is unavailable, which is not a failure. */
+export function withoutAiSecret(live: Partial<Record<Component, Settings>>) {
+  return (["api", "bridge"] as const)
+    .filter(
+      (component) =>
+        !live[component]?.bindings.some(
+          (b) => b.name === "AI_BRIDGE_SECRET" && isSecret(b),
+        ),
+    )
+    .map((component) => components[component].worker);
 }
 export function assertPreserved(before: Settings, after: Settings) {
   for (const original of before.bindings) {
@@ -232,11 +258,7 @@ export function assertPreserved(before: Settings, after: Settings) {
 }
 export function validateBridge(settings: Settings) {
   for (const binding of settings.bindings) {
-    if (
-      binding.name !== "SALDO_AI" &&
-      ["secret_text", "secret_key"].includes(binding.type)
-    )
-      continue;
+    if (binding.name !== "SALDO_AI" && isSecret(binding)) continue;
     // cf deploy keeps secrets but deletes undeclared plain or JSON vars.
     if (
       binding.name !== "SALDO_AI" &&
@@ -605,8 +627,12 @@ function mask(value: unknown) {
       `::add-mask::${value.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A")}`,
     );
 }
-/** A live Worker's bindings, after checking its alternate endpoints are off. */
-async function inspect(name: string): Promise<Settings | undefined> {
+const endpointsOf = (name: string) =>
+  api(`workers/scripts/${name}/subdomain`, "worker-endpoints");
+/** A live Worker's bindings and its workers.dev and Preview URL settings. */
+async function inspect(
+  name: string,
+): Promise<{ settings: Settings; endpoints: unknown } | undefined> {
   const settings = await api(
     `workers/scripts/${name}/settings`,
     "worker-settings",
@@ -614,10 +640,10 @@ async function inspect(name: string): Promise<Settings | undefined> {
     { missing: true },
   );
   if (settings === undefined) return undefined;
-  validatePrivateEndpoints(
-    await api(`workers/scripts/${name}/subdomain`, "worker-endpoints"),
-  );
-  return parseSettings(settings);
+  return {
+    settings: parseSettings(settings),
+    endpoints: await endpointsOf(name),
+  };
 }
 interface Active {
   version: string;
@@ -658,7 +684,13 @@ export interface ReleaseState {
   tag: string;
   components: Record<
     Component,
-    { hash: string; outcome: Outcome; version?: string }
+    {
+      hash: string;
+      outcome: Outcome;
+      version?: string;
+      /** workers.dev and Preview URLs were turned off again. */
+      endpointsReapplied?: boolean;
+    }
   >;
 }
 const statePath = (temp: string) => join(temp, "saldo-release.json");
@@ -704,38 +736,131 @@ export async function prepare() {
       outcome: "not attempted",
     };
   }
-  const live: Partial<Record<Component | "legacy", Settings>> = {};
-  for (const component of deployOrder) {
-    const settingsOf = await inspect(components[component].worker);
-    if (settingsOf) {
-      validateLive(component, settingsOf, settings);
-      live[component] = settingsOf;
-    } else if (component === "bridge")
-      throw new Error("The bridge Worker is missing; deployment blocked");
+  const checked = await preflight(settings);
+  const timestamp = new Date().toISOString();
+  privateWrite(snapshotPath(c.temp), {
+    live: checked.live,
+    recovery: { timestamp, bookmark: checked.bookmark },
+  });
+  privateWrite(statePath(c.temp), state);
+  const notes = [
+    ...checked.placeholders.map(
+      (component) =>
+        `- ${components[component].worker} is a placeholder; this run deploys it for the first time.`,
+    ),
+    ...checked.publicEndpoints.map(
+      (component) =>
+        `- ${components[component].worker} has workers.dev or Preview URLs enabled; its deploy step turns them off.`,
+    ),
+  ];
+  if (process.env.GITHUB_STEP_SUMMARY)
+    appendFileSync(
+      process.env.GITHUB_STEP_SUMMARY,
+      [
+        "### Pre-deployment safety",
+        `Build Output, token permissions and private Worker settings verified. D1 Time Travel recovery point checked at ${timestamp}. No database contents exported.`,
+        ...notes,
+        "",
+      ].join("\n"),
+    );
+  console.log(
+    [
+      "Build Output, token permissions, private configuration and D1 recovery point verified; values withheld.",
+      ...notes,
+    ].join("\n"),
+  );
+}
+/**
+ * The account-level reads: no custom domain on the API or the bridge, the app
+ * hostname on the web or the legacy Worker, and the account's workers.dev
+ * subdomain. They need account Workers Scripts Read, which the per-Worker
+ * grants do not include.
+ */
+async function accountState(settings: ReleaseSettings) {
+  for (const component of ["api", "bridge"] as const) {
+    const domains = (await api(
+      `workers/domains?service=${components[component].worker}`,
+      "worker-domains",
+    )) as unknown[];
+    if (!Array.isArray(domains) || domains.length)
+      throw new Error(`${components[component].worker} has a custom domain`);
   }
-  // Until the cutover, the legacy app Worker is the live Access setup.
+  const owners = (await api(
+    `workers/domains?hostname=${encodeURIComponent(new URL(settings.appOrigin).hostname)}`,
+    "worker-domains",
+  )) as { service?: string }[];
+  const holder = Array.isArray(owners) ? owners[0]?.service : undefined;
+  if (holder !== components.web.worker && holder !== legacyWorker)
+    throw new Error("The app hostname is not served by the web Worker");
+  // workers.dev answers 404 (error 1042) for a Worker that has it disabled.
+  const { subdomain } = (await api(
+    "workers/subdomain",
+    "workers-subdomain",
+  )) as { subdomain?: string };
+  if (!subdomain)
+    throw new Error("The account workers.dev subdomain is unknown");
+  return { holder, subdomain };
+}
+export interface Preflight {
+  /** Every deployable Worker's bindings before the release. */
+  live: Partial<Record<Component, Settings>>;
+  /** API or web Workers the owner created that no release has deployed. */
+  placeholders: Component[];
+  /** Workers whose deploy step must turn workers.dev or Preview URLs off. */
+  publicEndpoints: Component[];
+  bookmark: string;
+}
+/**
+ * Every read the release relies on, made before anything changes: the
+ * account-level reads, each Worker's settings, endpoints, deployments and
+ * active version, the legacy Worker and the D1 recovery point. A token
+ * without one of the permissions in docs/DEPLOYMENT.md therefore stops the
+ * run here, not halfway through a deploy.
+ */
+export async function preflight(settings: ReleaseSettings): Promise<Preflight> {
+  await accountState(settings);
+  const result: Preflight = {
+    live: {},
+    placeholders: [],
+    publicEndpoints: [],
+    bookmark: "",
+  };
+  for (const component of deployOrder) {
+    const worker = components[component].worker;
+    const found = await inspect(worker);
+    // The per-Worker token cannot create a Worker; the deploy would fail
+    // after the migrations and the earlier Workers.
+    if (!found)
+      throw new Error(
+        `${worker} does not exist. The production token can deploy only existing Workers: create an inert placeholder and add it to the token first (docs/DEPLOYMENT.md, "Adding a Worker").`,
+      );
+    const active = await activeVersion(worker);
+    result.live[component] = found.settings;
+    // A deploy step turns these off again (see deploy), and verify requires it.
+    if (!privateEndpoints(found.endpoints))
+      result.publicEndpoints.push(component);
+    if (
+      component !== "bridge" &&
+      isPlaceholder(found.settings, active?.message)
+    )
+      result.placeholders.push(component);
+    else validateLive(component, found.settings, settings);
+  }
+  // The legacy app Worker keeps the same Access setup and database while it
+  // exists. Releases never deploy it, so its endpoints must already be off.
   const legacy = await inspect(legacyWorker);
-  if (legacy) validateLegacy(legacy, settings);
+  if (legacy) {
+    validatePrivateEndpoints(legacy.endpoints);
+    validateLegacy(legacy.settings, settings);
+  }
   const recovery = (await api(
     `d1/database/${settings.databaseId}/time_travel/bookmark`,
     "d1-recovery",
   )) as { bookmark?: unknown };
   if (typeof recovery.bookmark !== "string" || !recovery.bookmark)
     throw new Error("No verified D1 recovery point; migrations blocked");
-  const timestamp = new Date().toISOString();
-  privateWrite(snapshotPath(c.temp), {
-    live,
-    recovery: { timestamp, bookmark: recovery.bookmark },
-  });
-  privateWrite(statePath(c.temp), state);
-  if (process.env.GITHUB_STEP_SUMMARY)
-    appendFileSync(
-      process.env.GITHUB_STEP_SUMMARY,
-      `### Pre-deployment safety\nBuild Output and private Worker settings verified. D1 Time Travel recovery point checked at ${timestamp}. No database contents exported.\n`,
-    );
-  console.log(
-    "Build Output, private configuration and D1 recovery point verified; values withheld.",
-  );
+  result.bookmark = recovery.bookmark;
+  return result;
 }
 /**
  * Runs the component's own pinned cf (never a global one) in its directory,
@@ -776,16 +901,22 @@ export function migrate() {
 /**
  * Uploads the verified Build Output and sends all traffic to it, unless the
  * active version already carries the same content. The new version must be
- * the active one afterwards.
+ * the active one afterwards, with workers.dev and Preview URLs off.
+ *
+ * `cf deploy` turns those off after it activates the version, so a failed
+ * run can leave the new version serving with them on. A re-run finds the
+ * version unchanged and applies only the Build Output's triggers and
+ * endpoint settings again, without uploading a new version.
  */
 export async function deploy(component: Component) {
   const c = context();
   const state = readState(c.temp);
   const entry = state.components[component];
-  const worker = components[component].worker;
+  const { worker, dir } = components[component];
   const message = contentMessage(entry.hash);
   const before = await activeVersion(worker);
-  if (before?.message === message) {
+  const unchanged = before?.message === message;
+  if (unchanged && privateEndpoints(await endpointsOf(worker))) {
     entry.outcome = "unchanged";
     entry.version = before.version;
     privateWrite(statePath(c.temp), state);
@@ -794,30 +925,61 @@ export async function deploy(component: Component) {
   }
   entry.outcome = "failed";
   privateWrite(statePath(c.temp), state);
-  cf(
-    components[component].dir,
-    [
-      "deploy",
-      "--prebuilt",
-      "--mode",
-      "production",
-      "--no-provision",
-      "--tag",
-      state.tag,
-      "--message",
-      message,
-      "--quiet",
-      ...(component === "bridge" ? ["--containers-rollout", "immediate"] : []),
-    ],
-    { timeout: component === "bridge" ? 900000 : 300000, quiet: false },
-  );
-  const after = await activeVersion(worker);
-  if (after?.message !== message || after.tag !== state.tag)
-    throw new Error(`${worker} is not serving the uploaded version`);
-  entry.outcome = "deployed";
-  entry.version = after.version;
+  let version: string;
+  if (unchanged) {
+    console.log(
+      `${worker} is unchanged but has workers.dev or Preview URLs enabled; applying its private endpoint settings again.`,
+    );
+    cf(
+      dir,
+      [
+        "workers",
+        "triggers",
+        "deploy",
+        "--prebuilt",
+        "--mode",
+        "production",
+        "--quiet",
+      ],
+      { timeout: 120000, quiet: false },
+    );
+    version = before.version;
+  } else {
+    cf(
+      dir,
+      [
+        "deploy",
+        "--prebuilt",
+        "--mode",
+        "production",
+        "--no-provision",
+        "--tag",
+        state.tag,
+        "--message",
+        message,
+        "--quiet",
+        ...(component === "bridge"
+          ? ["--containers-rollout", "immediate"]
+          : []),
+      ],
+      { timeout: component === "bridge" ? 900000 : 300000, quiet: false },
+    );
+    const after = await activeVersion(worker);
+    if (after?.message !== message || after.tag !== state.tag)
+      throw new Error(`${worker} is not serving the uploaded version`);
+    version = after.version;
+  }
+  if (!privateEndpoints(await endpointsOf(worker)))
+    throw new Error(`${worker} still has workers.dev or Preview URLs enabled`);
+  entry.outcome = unchanged ? "unchanged" : "deployed";
+  entry.version = version;
+  if (unchanged) entry.endpointsReapplied = true;
   privateWrite(statePath(c.temp), state);
-  console.log(`${worker} now serves version ${after.version}.`);
+  console.log(
+    unchanged
+      ? `${worker} kept version ${version}; workers.dev and Preview URLs are off again.`
+      : `${worker} now serves version ${version}.`,
+  );
 }
 /** Anonymous requests must meet Access: a redirect to the team, or 401. */
 export function assertAccessDenied(
@@ -840,39 +1002,20 @@ export async function verify() {
   const before = JSON.parse(readFileSync(snapshotPath(c.temp), "utf8")) as {
     live: Partial<Record<Component, Settings>>;
   };
+  const now: Partial<Record<Component, Settings>> = {};
   for (const component of deployOrder) {
     const worker = components[component].worker;
     const live = await inspect(worker);
     if (!live) throw new Error(`${worker} is missing after deployment`);
+    validatePrivateEndpoints(live.endpoints);
     const original = before.live[component];
-    if (original) assertPreserved(original, live);
-    validateLive(component, live, settings);
+    if (original) assertPreserved(original, live.settings);
+    validateLive(component, live.settings, settings);
+    now[component] = live.settings;
   }
   // No custom domain on the API or the bridge; the web holds the app's
-  // hostname once the owner moves it from the legacy Worker.
-  const host = new URL(settings.appOrigin).hostname;
-  for (const component of ["api", "bridge"] as const) {
-    const domains = (await api(
-      `workers/domains?service=${components[component].worker}`,
-      "worker-domains",
-    )) as unknown[];
-    if (!Array.isArray(domains) || domains.length)
-      throw new Error(`${components[component].worker} has a custom domain`);
-  }
-  const owners = (await api(
-    `workers/domains?hostname=${encodeURIComponent(host)}`,
-    "worker-domains",
-  )) as { service?: string }[];
-  const holder = Array.isArray(owners) ? owners[0]?.service : undefined;
-  if (holder !== components.web.worker && holder !== legacyWorker)
-    throw new Error("The app hostname is not served by the web Worker");
-  // workers.dev answers 404 (error 1042) for a Worker that has it disabled.
-  const { subdomain } = (await api(
-    "workers/subdomain",
-    "workers-subdomain",
-  )) as { subdomain?: string };
-  if (!subdomain)
-    throw new Error("The account workers.dev subdomain is unknown");
+  // hostname, or the legacy Worker while a cutover is pending.
+  const { holder, subdomain } = await accountState(settings);
   for (const component of deployOrder) {
     const response = await fetch(
       `https://${components[component].worker}.${subdomain}.workers.dev/api/status`,
@@ -894,13 +1037,20 @@ export async function verify() {
       settings,
     );
   }
+  const notes = [
+    holder === components.web.worker
+      ? "The app hostname is served by saldo-web."
+      : "The app hostname is still served by the legacy saldo Worker: the owner's cutover is pending.",
+  ];
+  // AI is optional: without the shared secret the API reports it unavailable.
+  const withoutSecret = withoutAiSecret(now);
+  if (withoutSecret.length) {
+    const warning = `${withoutSecret.join(" and ")} ${withoutSecret.length > 1 ? "have" : "has"} no AI_BRIDGE_SECRET, so AI stays unavailable. Set it with cf workers secrets bulk (docs/DEPLOYMENT.md, "Secrets").`;
+    console.log(`::warning::${warning}`);
+    notes.push(`Warning: ${warning}`);
+  }
   if (process.env.GITHUB_STEP_SUMMARY)
-    appendFileSync(
-      process.env.GITHUB_STEP_SUMMARY,
-      holder === components.web.worker
-        ? "The app hostname is served by saldo-web.\n"
-        : "The app hostname is still served by the legacy saldo Worker: the owner's cutover is pending.\n",
-    );
+    appendFileSync(process.env.GITHUB_STEP_SUMMARY, `${notes.join("\n")}\n`);
   console.log(
     "Bindings, private endpoints, domains, workers.dev and anonymous access verified. Owner login and live ChatGPT acceptance remain separate.",
   );
@@ -916,8 +1066,10 @@ export function summarize(
       text: "### Release\nNo component was deployed: the run stopped before the pre-deployment checks finished.\n",
     };
   const rows = deployOrder.map((component) => {
-    const { outcome, version } = state.components[component];
-    return `| ${components[component].worker} | ${outcome} | ${version ?? "-"} |`;
+    const { outcome, version, endpointsReapplied } =
+      state.components[component];
+    const note = endpointsReapplied ? " (private endpoints re-applied)" : "";
+    return `| ${components[component].worker} | ${outcome}${note} | ${version ?? "-"} |`;
   });
   const outcomes = deployOrder.map((c) => state.components[c].outcome);
   const failed = outcomes.includes("failed");
