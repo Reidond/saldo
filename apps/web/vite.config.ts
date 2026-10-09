@@ -15,27 +15,32 @@ export default defineConfig(({ command }) => ({
         import("@cloudflare/vite-plugin"),
         import("@tailwindcss/vite"),
       ]);
+    const text = (value: string) => ({ type: "text" as const, value });
     return [
       tailwindcss(),
       rsc(),
       react(),
+      // Reads the Worker from cloudflare.config.ts.
       cloudflare({
         // `ssr` runs inside the same Worker as `rsc`.
         viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
-        // `vp dev` only: serve synthetic data without an API Worker or Access,
-        // and let Vite answer its own module requests before the Worker.
-        // Builds never get these settings, and the runtime refuses synthetic
-        // data outside a Vite dev server (see src/server/config.ts).
+        // `vp dev` and `cf dev` only: serve synthetic data without an API
+        // Worker or Access, and let Vite answer its own module requests
+        // before the Worker. Builds never get these settings, and the runtime
+        // refuses synthetic data outside a Vite dev server (see
+        // src/server/config.ts). Merged over cloudflare.config.ts.
         config:
           command === "serve"
             ? {
-                assets: { binding: "ASSETS", run_worker_first: false },
-                vars: {
-                  SALDO_DATA_SOURCE: "synthetic",
-                  SALDO_SYNTHETIC_AI:
+                assets: { runWorkerFirst: false },
+                env: {
+                  SALDO_DATA_SOURCE: text("synthetic"),
+                  SALDO_SYNTHETIC_AI: text(
                     process.env.SALDO_SYNTHETIC_AI ?? "available",
-                  SALDO_SYNTHETIC_SCENARIO:
+                  ),
+                  SALDO_SYNTHETIC_SCENARIO: text(
                     process.env.SALDO_SYNTHETIC_SCENARIO ?? "sample",
+                  ),
                 },
               }
             : undefined,
@@ -44,9 +49,9 @@ export default defineConfig(({ command }) => ({
   }),
   environments: {
     ssr: {
+      // The Cloudflare plugin writes it next to the rsc bundle, inside the
+      // Worker's Build Output (.cloudflare/output/v0/workers/default/bundle).
       build: {
-        // Inside dist/rsc so the deployable Worker directory is self-contained.
-        outDir: "./dist/rsc/ssr",
         rollupOptions: { input: { index: "./src/framework/entry.ssr.tsx" } },
       },
       optimizeDeps: { entries: ["./src/framework/entry.ssr.tsx"] },

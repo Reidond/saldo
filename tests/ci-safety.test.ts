@@ -218,6 +218,21 @@ type DockerCall = { args: string[]; bridgeSecret: string };
 
 // A fake executable tests orchestration without Docker, a daemon, an image,
 // network access or real credentials. Actual image behavior is a CI-only check.
+const builtImage = "cloudflare-build/0123abcd/saldo-ai-bridge-saldoai:4567ef";
+// A synthetic bridge Build Output that records the image cf built.
+function fakeBuildOutput(directory: string, reference = builtImage) {
+  const container = join(directory, "containers/saldo-ai-bridge-saldoai");
+  mkdirSync(container, { recursive: true });
+  writeFileSync(
+    join(container, "container.config.json"),
+    JSON.stringify({
+      name: "saldo-ai-bridge-saldoai",
+      image: { localReference: reference },
+    }),
+  );
+  return directory;
+}
+
 function runWithFakeDocker(failure: "none" | "run" | "smoke" = "none") {
   const directory = mkdtempSync(join(tmpdir(), "saldo-smoke-test-"));
   const log = join(directory, "calls.jsonl");
@@ -248,6 +263,7 @@ function runWithFakeDocker(failure: "none" | "run" | "smoke" = "none") {
         PATH: `${directory}${delimiter}${process.env.PATH ?? ""}`,
         SALDO_TEST_DOCKER_LOG: log,
         SALDO_TEST_DOCKER_FAILURE: failure,
+        SALDO_BRIDGE_BUILD_OUTPUT: fakeBuildOutput(join(directory, "output")),
         AI_BRIDGE_SECRET: "caller-secret-must-never-be-used",
         OPENAI_API_KEY: "caller-provider-key-must-never-be-used",
       },
@@ -275,7 +291,7 @@ describe("isolated prebuilt image smoke orchestration", () => {
     const { result, calls } = runWithFakeDocker();
     expect(result.status, result.stderr).toBe(0);
     const run = calls[0];
-    expect(run.args).toContain("saldo-ai-bridge:ci");
+    expect(run.args.at(-1)).toBe(builtImage);
     expect(
       run.args.slice(
         run.args.indexOf("--network"),
@@ -323,6 +339,33 @@ describe("isolated prebuilt image smoke orchestration", () => {
     ]);
   });
 
+  it("runs only the image recorded in the bridge Build Output", () => {
+    const directory = mkdtempSync(join(tmpdir(), "saldo-smoke-image-test-"));
+    try {
+      for (const output of [
+        join(directory, "missing"),
+        fakeBuildOutput(
+          join(directory, "remote"),
+          "docker.io/attacker/image:latest",
+        ),
+      ]) {
+        const result = spawnSync(process.execPath, [smokeScript], {
+          encoding: "utf8",
+          timeout: 10_000,
+          env: {
+            ...process.env,
+            PATH: directory,
+            SALDO_BRIDGE_BUILD_OUTPUT: output,
+          },
+        });
+        expect(result.status).toBe(1);
+        expect(result.stderr).toMatch(/Build Output/);
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it.each(["run", "smoke"] as const)(
     "fails closed and still removes the container after %s failure",
     (failure) => {
@@ -340,7 +383,11 @@ describe("isolated prebuilt image smoke orchestration", () => {
       const result = spawnSync(process.execPath, [smokeScript], {
         encoding: "utf8",
         timeout: 10_000,
-        env: { ...process.env, PATH: directory },
+        env: {
+          ...process.env,
+          PATH: directory,
+          SALDO_BRIDGE_BUILD_OUTPUT: fakeBuildOutput(join(directory, "output")),
+        },
       });
       expect(result.status).toBe(1);
       expect(result.stderr).toContain("Cannot start prebuilt image");

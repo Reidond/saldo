@@ -5,8 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vp dev --host 127.0.0.1",
-    "build": "tsc --noEmit && vp build",
+    "build": "tsc --noEmit && cf build",
+    "deploy:check": "cf deploy --dry-run --prebuilt --mode production",
     "preview": "vp preview --host 127.0.0.1",
+    "types": "cf workers types",
     "test": "vp test",
     "typecheck": "tsc --noEmit"
   },
@@ -29,12 +31,11 @@
     "@types/react-dom": "catalog:",
     "@vitejs/plugin-react": "catalog:",
     "@vitejs/plugin-rsc": "catalog:",
+    "cf": "catalog:",
     "jsdom": "catalog:",
     "playwright": "catalog:",
     "tailwindcss": "catalog:",
     "typescript": "catalog:",
-    "vite": "catalog:",
-    "vite-plus": "catalog:",
-    "wrangler": "catalog:"
+    "vite-plus": "catalog:"
   }
 }

@@ -1,5 +1,6 @@
 import { Elysia } from "elysia";
 import { CloudflareAdapter } from "elysia/adapter/cloudflare-worker";
+import { WebStandardAdapter } from "elysia/adapter/web-standard";
 import { actorApp, ownerApp, publicApp, type ScopeResolver } from "./context";
 import { errorResponse } from "./errors";
 import { isAllowedOrigin } from "./origin";
@@ -10,6 +11,23 @@ import { meRoutes } from "./routes/me";
 import { reviewRoutes } from "./routes/review";
 import { statusRoutes } from "./routes/status";
 import { subscriptionRoutes } from "./routes/subscriptions";
+
+/**
+ * Workers allow code generation only while the script starts, which is when a
+ * deployed Worker compiles this app. `cf dev` (the Cloudflare Vite plugin)
+ * evaluates modules later, inside a runner object, where `new Function`
+ * throws. There the app uses Elysia's dynamic handlers and the web-standard
+ * adapter, because the Cloudflare adapter generates code even without AOT.
+ */
+function codeGenerationAllowed() {
+  try {
+    // oxlint-disable-next-line typescript/no-implied-eval -- a probe, never called
+    new Function("");
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * The app Worker's HTTP surface. Compiled once per isolate (Elysia generates
@@ -30,7 +48,12 @@ export function createApp(scopeOf: ScopeResolver) {
   const web = ownerApp(scopeOf);
   assetRoutes(web);
 
-  return new Elysia({ adapter: CloudflareAdapter, strictPath: true })
+  const aot = codeGenerationAllowed();
+  return new Elysia({
+    adapter: aot ? CloudflareAdapter : WebStandardAdapter,
+    aot,
+    strictPath: true,
+  })
     .onRequest(({ request }) =>
       isAllowedOrigin(request, scopeOf(request).appOrigin)
         ? undefined

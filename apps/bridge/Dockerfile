@@ -7,7 +7,7 @@ COPY packages/domain/package.json ./packages/domain/package.json
 RUN pnpm install --frozen-lockfile --ignore-scripts --filter "@saldo/bridge..."
 COPY packages/domain/src ./packages/domain/src
 COPY apps/bridge/container.ts apps/bridge/crypto.ts apps/bridge/inference.ts apps/bridge/tsconfig.json apps/bridge/vite.config.ts ./apps/bridge/
-RUN pnpm --filter @saldo/bridge run build
+RUN pnpm --filter @saldo/bridge run pack
 
 FROM node:24-bookworm-slim
 WORKDIR /app

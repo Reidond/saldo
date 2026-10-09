@@ -1,10 +1,46 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { setTimeout } from "node:timers/promises";
 import process from "node:process";
 import console from "node:console";
 
-const image = "saldo-ai-bridge:ci";
+// `cf build` in apps/bridge builds the Container image and records its local
+// reference in the Build Output; `cf deploy --prebuilt` pushes that image. The
+// smoke test runs exactly that image.
+const buildOutput =
+  process.env.SALDO_BRIDGE_BUILD_OUTPUT ??
+  fileURLToPath(
+    new URL("../../apps/bridge/.cloudflare/output/v0/", import.meta.url),
+  );
+function builtImage() {
+  let reference: unknown;
+  try {
+    reference = JSON.parse(
+      readFileSync(
+        join(
+          buildOutput,
+          "containers/saldo-ai-bridge-saldoai/container.config.json",
+        ),
+        "utf8",
+      ),
+    )?.image?.localReference;
+  } catch {
+    throw new Error(
+      "No bridge Build Output; run the bridge build (cf build) first.",
+    );
+  }
+  if (
+    typeof reference !== "string" ||
+    !/^cloudflare-build\/[a-z0-9]+\/saldo-ai-bridge-saldoai:[a-z0-9]+$/.test(
+      reference,
+    )
+  )
+    throw new Error("Unexpected bridge image reference in the Build Output.");
+  return reference;
+}
 const name = `saldo-ai-smoke-${process.pid}-${randomUUID()}`;
 // Generated solely for this disposable container. Never use a caller's secret.
 const secret = `${randomUUID()}${randomUUID()}`.replaceAll("-", "");
@@ -83,8 +119,9 @@ const smokeProbe = `
 async function main() {
   if (process.argv.length !== 2)
     throw new Error(
-      "Usage: node scripts/ci/smoke-image.ts (uses the prebuilt saldo-ai-bridge:ci image).",
+      "Usage: node scripts/ci/smoke-image.ts (uses the image of the bridge Build Output).",
     );
+  const image = builtImage();
   try {
     // No port publication, mounts, remote image pull, or provider credentials.
     mayExist = true;

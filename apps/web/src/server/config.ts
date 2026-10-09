@@ -1,7 +1,7 @@
 import "server-only";
 import type { ServiceFetcher } from "./api/binding";
 
-/** Bindings and vars of the web Worker (see wrangler.jsonc). */
+/** Bindings and vars of the web Worker (see cloudflare.config.ts). */
 export interface WebEnv {
   API?: ServiceFetcher;
   ASSETS?: ServiceFetcher;

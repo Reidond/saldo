@@ -1,6 +1,8 @@
-// Prevent cf auto-init from replacing the legacy protected Worker configuration.
-// The workspace root is not the cf Worker build package; see deployment/.
+// The repository root is not a Worker project. Its presence stops cf's
+// automatic configuration from turning the workspace root into one; each
+// deployable has its own cloudflare.config.ts in apps/api, apps/web and
+// apps/bridge. Run cf commands from those directories.
 throw new Error(
-  "Use the deployment package: pnpm run cf:build:app or pnpm run cf:build:bridge.",
+  "Run cf from apps/api, apps/web or apps/bridge, not the repository root.",
 );
 export default {};

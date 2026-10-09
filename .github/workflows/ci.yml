@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  CLOUDFLARE_SEND_METRICS: "false"
+  CF_SEND_TELEMETRY: "false"
   DOCKER_DEFAULT_PLATFORM: linux/amd64
 
 jobs:
@@ -29,19 +29,20 @@ jobs:
       - name: Enable the pinned pnpm from packageManager
         run: corepack enable pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm run check
+      - name: Check, test and cf build every Worker (bridge image included)
+        run: pnpm run check
       - name: Require additive-only database migrations
         run: node scripts/ci/migrations.ts
-      - name: Build the Linux amd64 bridge image
-        run: docker build --platform linux/amd64 --file apps/bridge/Dockerfile --tag saldo-ai-bridge:ci .
-      - name: Smoke-test rejection paths without network access
+      - name: Validate every Build Output with cf, without credentials
+        run: pnpm run deploy:check
+      - name: Smoke-test the built bridge image without network access
         run: node scripts/ci/smoke-image.ts
 
   deploy:
     needs: check
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
     environment: saldo-production
     concurrency:
       group: saldo-production
@@ -49,6 +50,8 @@ jobs:
     env:
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       SALDO_D1_DATABASE_ID: ${{ vars.SALDO_D1_DATABASE_ID }}
+      SALDO_APP_ORIGIN: ${{ vars.SALDO_APP_ORIGIN }}
+      SALDO_ACCESS_TEAM_DOMAIN: ${{ vars.SALDO_ACCESS_TEAM_DOMAIN }}
       SALDO_RELEASE_TAG: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - name: Check out the checked commit
@@ -63,48 +66,52 @@ jobs:
         env:
           TOKEN_CONFIGURED: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
         run: test "$TOKEN_CONFIGURED" = true
+      - name: Mask and validate the release settings
+        env:
+          SALDO_ACCESS_AUD: ${{ secrets.SALDO_ACCESS_AUD }}
+          SALDO_OWNER_SUB: ${{ secrets.SALDO_OWNER_SUB }}
+        run: node scripts/ci/deployment.ts settings
       - name: Enable the pinned pnpm from packageManager
         run: corepack enable pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm run check
       - run: node scripts/ci/migrations.ts
-      - name: Build the exact bridge source on Linux amd64
-        run: docker build --platform linux/amd64 --file apps/bridge/Dockerfile --tag saldo-ai-bridge:ci .
-      - run: node scripts/ci/smoke-image.ts
       - name: Refuse an outdated main commit before any mutation
         run: node scripts/ci/deployment.ts current-main
-      - name: Verify live private settings and D1 recovery point
+      - name: Build the release Workers with the protected settings
+        env:
+          SALDO_RELEASE: production
+          SALDO_ACCESS_AUD: ${{ secrets.SALDO_ACCESS_AUD }}
+          SALDO_OWNER_SUB: ${{ secrets.SALDO_OWNER_SUB }}
+        run: pnpm run build
+      - name: Validate the release Build Output with cf, without credentials
+        run: pnpm run deploy:check
+      - name: Smoke-test the bridge image that will be deployed
+        run: node scripts/ci/smoke-image.ts
+      - name: Verify Build Output, live private settings and D1 recovery point
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          SALDO_ACCESS_AUD: ${{ secrets.SALDO_ACCESS_AUD }}
+          SALDO_OWNER_SUB: ${{ secrets.SALDO_OWNER_SUB }}
         run: node scripts/ci/deployment.ts prepare
       - name: Apply additive migrations sequentially
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: node scripts/ci/deployment.ts migrate
       - name: Deploy the private bridge and Container
-        uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4.1.3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          wranglerVersion: "4.148.0"
-          packageManager: pnpm
-          quiet: true
-          command: deploy --config apps/bridge/wrangler.jsonc --keep-vars --containers-rollout immediate
-      - name: Upload and activate the app without changing domain routes
-        uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4.1.3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          wranglerVersion: "4.148.0"
-          packageManager: pnpm
-          quiet: true
-          command: |
-            versions upload --config "${{ runner.temp }}/saldo-app.wrangler.json" --keep-vars --tag "${{ env.SALDO_RELEASE_TAG }}"
-            versions deploy --config "${{ runner.temp }}/saldo-app.wrangler.json" --version-tag "${{ env.SALDO_RELEASE_TAG }}" --percentage 100 --yes
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: node scripts/ci/deployment.ts deploy bridge
+      - name: Deploy the app without changing domain routes
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: node scripts/ci/deployment.ts deploy app
       - name: Verify preserved settings and anonymous access denial
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          SALDO_ACCESS_AUD: ${{ secrets.SALDO_ACCESS_AUD }}
+          SALDO_OWNER_SUB: ${{ secrets.SALDO_OWNER_SUB }}
         run: node scripts/ci/deployment.ts verify
-      - name: Remove ephemeral private configuration
+      - name: Remove ephemeral private state
         if: always()
-        run: rm -f "$RUNNER_TEMP/saldo-app.wrangler.json" "$RUNNER_TEMP/saldo-production-snapshot.json"
+        run: rm -f "$RUNNER_TEMP/saldo-production-snapshot.json"
