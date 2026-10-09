@@ -2,6 +2,8 @@
 
 A private, self-hosted personal finance workspace. Subscriptions are the first module; accounts, review proposals, and attachment boundaries are reusable for future modules.
 
+The intended product, scope, open decisions, and current pause state are described in the [product specification](docs/PRODUCT-SPEC.md).
+
 ## Current status
 
 Local implementation. Not deployed. Real AI requires an explicitly configured private inference bridge and user-controlled ChatGPT sign-in. No API key or paid API fallback is silently enabled. The app starts without personal records; the optional sample workspace contains synthetic examples only.
