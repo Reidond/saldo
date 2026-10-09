@@ -1,13 +1,21 @@
 # Plan: Cloudflare Access login and "Connect ChatGPT plan"
 
-Implementation plan · researched 8 October 2026 · docs only
+Implementation plan · researched 8 October 2026 · updated to the merged stack 9 October 2026 · docs only
 
 This plan covers two linked features for Saldo:
 
 - **A. Login backed by Cloudflare Access.** How the owner signs in and out, how the verified Access identity maps to an internal `users` record, and how the web and API Workers each verify identity.
 - **B. A "Connect ChatGPT plan" button.** The owner completes the official Sign in with ChatGPT (SIWC) flow in the browser, and Saldo then runs AI requests funded by their eligible ChatGPT plan. Until OpenAI approves a hosted client, the button starts the **paired local connect** interim path instead (§6.12). The owner chose that path on 8 October 2026.
 
-It targets the architecture being built in parallel: a pnpm/Vite+ monorepo with `apps/api` (Elysia on Workers, strict handler → service → repository layering), `apps/web` (React Server Components + SSR on Workers, calling the API over a service binding), `apps/bridge`, and `packages/domain`. The API and web apps are deployed separately. File paths below are proposals and will be updated when this PR is rebased onto the final stack.
+It is written against the code merged in stack #6:
+
+- #3: pnpm workspace with Vite+.
+- #4: Elysia API with layered services and Access login.
+- #5: React Server Components web Worker with a fail-closed Access gate.
+- #7: Wrangler → `cf`.
+- #8: separate `saldo-api` and `saldo-web` Workers.
+
+Paths are the real ones, and anything that does not exist yet is marked **new**. The layering rules in [AGENTS.md](../../AGENTS.md#backend-architecture-appsapi), the HTTP contract in [apps/api/README.md](../../apps/api/README.md) and the `cf` pipeline in [DEPLOYMENT.md](../DEPLOYMENT.md) apply to everything below.
 
 It implements [PRODUCT-SPEC.md](../PRODUCT-SPEC.md) §4, §6, §7, §9, §12, §13 and §15. It neither authorizes nor performs any account, Cloudflare or OpenAI change.
 
@@ -15,21 +23,28 @@ It implements [PRODUCT-SPEC.md](../PRODUCT-SPEC.md) §4, §6, §7, §9, §12, §
 
 ## 1. Summary and recommendation
 
-| Question                             | Recommendation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Login                                | Cloudflare Access is the only login. There is no second app session or password. Both the web and API Workers verify the signed `Cf-Access-Jwt-Assertion` (JWKS signature, `iss`, `aud`, non-empty `sub`, `exp`). Each verified `(issuer, sub)` maps to a `users` row. An app-level `sessions_valid_after` makes sign-out take effect immediately.                                                                                                                                                                                                                                                                                                                                                       |
-| Owner-only today                     | Only the subject in `OWNER_SUB` may be provisioned; every other verified subject gets 403. The Access policy allows only the owner. Data is scoped by `account_id` on every query.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| Web → API identity                   | The web Worker verifies the JWT, then forwards the same JWT over the service binding, and the API verifies it again. The API has no public route. `ctx.access` cannot be used because Cloudflare does not propagate it across service bindings or to Workers with static assets.                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| ChatGPT connection (target)          | Build the full OAuth + PKCE + OIDC connection for an **OpenAI-issued hosted client** with an exact HTTPS callback, `https://saldo.sands.red/settings/chatgpt/callback`. This path switches on automatically once OpenAI issues the client.                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| ChatGPT connection (interim, chosen) | **Paired local connect** (§6.12), following OpenAI's documented [Self-hosted VMs](https://developers.openai.com/siwc/token-sharing-open-source/self-hosted-vms) procedure. The Saldo button creates a 10-minute, single-use pairing code. The owner runs `npx @reidond/saldo-connect@<version> <code>` once on a computer, which completes OpenAI's loopback sign-in locally. The helper encrypts the tokens to the pairing's one-time public key and uploads them through the owner's Access login using `cloudflared`, falling back to paste. From then on the Cloudflare runtime owns refresh, with a weekly keep-alive. The phone needs nothing, and the computer is needed again only to reconnect. |
-| Token storage                        | Keep secret material (access, refresh and ID tokens; pending PKCE/nonce) in a per-user **Durable Object vault** inside `apps/api`, encrypted with AES-256-GCM using a Worker-secret key. The DO serializes rotating refreshes. Non-secret connection metadata goes in D1 `provider_connections` for UI, audit and queries.                                                                                                                                                                                                                                                                                                                                                                               |
-| Inference                            | Call `POST https://api.openai.com/v1/responses` **directly from the API Worker** (streaming, `store:false`). **Retire the bridge container**: Workers can do everything it does, with less cost, latency and attack surface (§9.6).                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| Images                               | Images are inline `input_image` data URLs, read from private R2 attachments. Support depends on the selected model and is shown as "unverified" until a request succeeds. There is no Files API and no remote URL fetch.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| Fallback                             | None. There is no API key, no other provider and no silent substitution. `AiProvider` has exactly two production implementations: `ChatGPTPlanProvider` and `DisabledProvider`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Question                             | Recommendation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Status                                                                                                                                                     |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Login                                | Cloudflare Access is the only login: no second app session and no password. Both Workers verify the signed `Cf-Access-Jwt-Assertion`. Each verified `(issuer, sub)` maps to a `users` row. An app-level `sessions_valid_after` makes sign-out immediate.                                                                                                                                                                                                                                                                                                                                                          | Verification, mapping and the `sessions_valid_after` check are done (#4, #5). **Open:** the sign-out endpoint that sets `sessions_valid_after` (task 1.5). |
+| Owner-only today                     | Only `OWNER_SUB` can be provisioned. Any other verified subject is refused, a disabled user gets 403, and every query is scoped by `actor.accountId`.                                                                                                                                                                                                                                                                                                                                                                                                                                                             | Done (#4).                                                                                                                                                 |
+| Web → API identity                   | `saldo-web` verifies the JWT and forwards the same JWT over the `API` binding. `saldo-api` has no route and verifies it again. `ctx.access` cannot be used: Cloudflare does not propagate it across bindings or to Workers with static assets.                                                                                                                                                                                                                                                                                                                                                                    | Done (#5, #8). **Open:** the API verifier's `type: "app"` check (task 1.10).                                                                               |
+| ChatGPT connection (target)          | OAuth + PKCE + OIDC with an **OpenAI-issued hosted client** and an exact HTTPS callback, `https://saldo.sands.red/settings/chatgpt/callback`. It switches on once OpenAI issues the client.                                                                                                                                                                                                                                                                                                                                                                                                                       | Gated on OpenAI (Phase 0).                                                                                                                                 |
+| ChatGPT connection (interim, chosen) | **Paired local connect** (§6.12), following OpenAI's documented [Self-hosted VMs](https://developers.openai.com/siwc/token-sharing-open-source/self-hosted-vms) procedure. <br>• Settings creates a 10-minute, single-use pairing code. <br>• The owner runs `npx @reidond/saldo-connect@<version> <code>` once on a computer, which completes OpenAI's loopback sign-in. <br>• The helper encrypts the tokens to the pairing's one-time key and uploads them through the owner's Access login with `cloudflared` (paste is the fallback). <br>• From then on `saldo-api` owns refresh, with a weekly keep-alive. | Not started (Phase 2).                                                                                                                                     |
+| Token storage                        | A per-user **`ChatGPTVault` Durable Object** in `saldo-api` holds the secrets, sealed with AES-256-GCM under a Worker secret, and serializes rotating refreshes. Non-secret metadata goes in D1 `provider_connections`.                                                                                                                                                                                                                                                                                                                                                                                           | Not started.                                                                                                                                               |
+| Inference                            | `POST https://api.openai.com/v1/responses` **directly from `saldo-api`** (streaming, `store:false`) through the existing `AiProvider` port. **Retire `saldo-ai-bridge` and its Container** (§9.6).                                                                                                                                                                                                                                                                                                                                                                                                                | Not started. The port and the disabled provider exist (#4).                                                                                                |
+| Images                               | Inline `input_image` data URLs from the existing `/api/chat` body (≤ 4 PNG/JPEG/WebP, checked by `imageSchema` in `@saldo/domain`). Support depends on the selected model and shows as "unverified" until a request succeeds. No Files API and no URL fetch.                                                                                                                                                                                                                                                                                                                                                      | Contract exists (#4).                                                                                                                                      |
+| Fallback                             | None: no API key, no other provider, no silent substitution. `AiProvider` has two production implementations: today's `disabledAiProvider` and the **new** ChatGPT plan provider.                                                                                                                                                                                                                                                                                                                                                                                                                                 | Boundary enforced (#4).                                                                                                                                    |
 
 **Blocker (confirmed in OpenAI's documentation on 2026-10-08):** the only self-serve plan-usage flow, the open-source dynamic registration, requires an HTTP **loopback** callback (`http://127.0.0.1:<port>/auth/callback`). A hosted HTTPS callback needs an OpenAI-issued client, which is "currently offered to a select group of commercial partners". Plan usage in a "remotely hosted app" is routed to the interest form. A fully browser-only button therefore needs OpenAI's approval.
 
-**Interim decision (owner, 8 October 2026):** do not wait. Ship the paired local connect (§6.12) as the interim connection path, and submit the interest form in parallel. Both paths share the vault, refresh, inference and UI code, so the hosted flow replaces only the connect step when approved. Spec §3, §7, §13 and §15 are updated to record this decision.
+**Interim decision (owner, 8 October 2026):** do not wait. Ship the paired local connect (§6.12) and submit the interest form in parallel. Both paths share the vault, refresh, inference and UI code, so the hosted flow will replace only the connect step. Spec §3, §4, §7, §12, §13 and §15 record this decision.
+
+**Later owner decisions (8 October 2026):**
+
+- Weekly keep-alive refresh for paired connections.
+- The helper is published to npm as `@reidond/saldo-connect` and run with `npx`.
+- The helper uploads through `cloudflared`, with paste as the fallback.
+- Access **Binding Cookie** stays off, because Cloudflare says not to use it with non-browser tools.
 
 ---
 
@@ -185,20 +200,45 @@ Facts this plan relies on:
 
 ---
 
-## 3. Current state (implementation history)
+## 3. Current state after stack #6
 
-| Component                                                           | Today                                                                                                                                               | Fate                                                                                                                                                          |
-| ------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `server/auth.ts`                                                    | Verifies the Access JWT (jose remote JWKS, `iss`, `aud`, required `sub/exp/iat`) and checks the exact `OWNER_SUB`. Returns `sub` as the account ID. | Logic moves to a shared verifier (§5.4) and `IdentityService`.                                                                                                |
-| `server/worker.ts`                                                  | A single Worker serving assets and the API. `accounts.id = OWNER_SUB`. Calls the bridge via the `AI` binding with `AI_BRIDGE_SECRET`.               | Split into `apps/web` and `apps/api` by the sibling sessions. AI calls go through `AiProvider`.                                                               |
-| `server/siwc.ts`                                                    | Bridge client (`/status`, `/chat`).                                                                                                                 | Deleted in Phase 2 and replaced by `ChatGPTPlanProvider`.                                                                                                     |
-| `bridge/auth.ts`                                                    | Open-source SIWC OAuth: scopes, exchange, ID-token validation, refresh.                                                                             | Adapted into `apps/api/.../chatgpt/oauth-client.ts` for the hosted client.                                                                                    |
-| `bridge/vault.ts`                                                   | `SessionVault`: AES-GCM sealed, serialized refresh, uncertain-refresh marker.                                                                       | Becomes the basis of the `ChatGPTVault` Durable Object, with a revised uncertain-refresh policy (§6.6).                                                       |
-| `bridge/inference.ts`                                               | Model catalog, Responses body, SSE "completed-only" parser, strict function-result parsing.                                                         | Moves into `responses-client.ts` and the chat service, with near-verbatim logic.                                                                              |
-| `bridge/crypto.ts`                                                  | WebCrypto envelope and constant-time secret compare.                                                                                                | Reused, with a key ID and per-record AAD.                                                                                                                     |
-| `bridge/container.ts`, `cloudflare.ts`, `Dockerfile`, `transfer.ts` | Node container doing inference, and chunked Worker-secret transfer.                                                                                 | **Retired** (§9.6). Pairing with one-time-key encryption (§6.12) replaces chunked secrets.                                                                    |
-| `bridge/bootstrap.ts`                                               | Local loopback sign-in CLI that keeps encrypted local token state and exports a bundle.                                                             | **Rewritten** as the stateless `tools/saldo-connect` helper (§6.12). Its loopback, PKCE, ticket and Host-check logic is reused. Local token state is dropped. |
-| Deployed `saldo-ai-bridge` Worker, Container and DO                 | Deployed and Access-protected; no account connected.                                                                                                | Removed from CI in Phase 2. Teardown is a **separate owner-approved action**.                                                                                 |
+### 3.1 Already implemented
+
+| Capability                    | PR     | Where                                                                                                                                                                                                                                                                                                                                  |
+| ----------------------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Web gate                      | #5     | `apps/web/src/server/gate.ts` runs first for every request, static assets included (`assets.runWorkerFirst`). It fails closed with a static 503 page when configuration is missing and a static 401 page when the token is unverified.                                                                                                 |
+| Web token check               | #5     | `apps/web/src/server/access.ts` → `verifyAccess`: RS256, `iss`, `aud`, `exp`, non-empty `sub`, `type: "app"`, 5-second skew.                                                                                                                                                                                                           |
+| Forwarding the identity       | #5     | `apps/web/src/server/api/binding.ts` → `createBindingApiClient`. It forwards the verified JWT and an `X-Request-Id`, sends `Origin: APP_ORIGIN` on writes, never forwards cookies, and zod-validates every response. Only `src/server/api` calls the API.                                                                              |
+| API token check               | #4     | `apps/api/src/infrastructure/access-verifier.ts` (`createAccessTokenVerifier`: RS256, `iss`, `aud`, required `sub/exp/iat`, cached remote JWKS) and `IdentityService.authenticate` (team-domain pattern, subject must equal `OWNER_SUB`).                                                                                              |
+| Guards                        | #4     | `publicApp` / `ownerApp` / `actorApp` in `apps/api/src/http/context.ts`. Errors map in `apps/api/src/http/errors.ts`: 401 "Private Saldo instance…", 403 "This Saldo instance is private."                                                                                                                                             |
+| Identity tables               | #4     | `apps/api/migrations/0002_identity.sql` adds `users`, `user_identities` and `audit_events`.                                                                                                                                                                                                                                            |
+| Owner provisioning and relink | #4     | `IdentityService.resolveActor` / `#linkOwner`. The new owner's `account_id` is their Access `sub`, so no data is rewritten. An `OWNER_SUB` change relinks the existing owner and is audited as `identity.linked`. A disabled user gets 403, and `iat <= sessions_valid_after` gets 401. Last-seen is updated at most every 10 minutes. |
+| `GET /api/me`                 | #4, #5 | Returns `{"user": {"id", "email", "displayName", "role"}}`; 401 when the session has expired, 403 when forbidden. The web reads it with `ApiClient.me()` and `getRequestContext().load.me`.                                                                                                                                            |
+| AI boundary                   | #4     | The `AiProvider` port in `apps/api/src/services/ports.ts` (`enabled`, `status()`, `extract()`). Implementations are `disabledAiProvider` and `createBridgeAiProvider` in `src/infrastructure/ai/`. Only `ChatService` may depend on it, enforced by AGENTS.md and `tests/architecture.test.ts`.                                        |
+| Account UI                    | #5     | `AccountBlock` in `apps/web/src/app/shell/app-shell.tsx`, `apps/web/src/app/client/account-menu.tsx`, and the Account card in `apps/web/src/app/pages/settings.tsx`. Sign-out is a link to `SIGN_OUT_HREF = "/cdn-cgi/access/logout"` (`src/app/routes.ts`), with copy saying it ends every Access app.                                |
+| ChatGPT card                  | #5     | The Settings card says "AI unavailable" honestly and states that signing in does not connect AI. API 401 → `ApiError("unauthenticated")` "Your session expired. Reload to sign in again."                                                                                                                                              |
+| Worker topology               | #8     | `saldo-web` is the only public entry. `saldo-api` has no route, domain, workers.dev or assets, and is reached only via the web's `API` binding. `saldo-ai-bridge` is reached only via the API's `AI` binding. Smoke checks prove all of this on every deploy (`scripts/ci/deployment.ts`).                                             |
+| `cf` builds and deploys       | #7     | Per-app `cloudflare.config.ts`, release settings from the protected GitHub Environment, secrets via `cf workers secrets bulk`, additive-migration policy (`scripts/ci/migrations.ts`).                                                                                                                                                 |
+
+### 3.2 Gaps in the merged code (now tasks)
+
+- **Nothing sets `sessions_valid_after`.** Sign-out is only the Access logout link; `apps/api/README.md` says "Nothing sets either field yet". This is task 1.5.
+- **The API verifier does not check `type: "app"`** (the web's does). Service tokens are already refused because their `sub` is empty, but the check should match. This is task 1.10.
+- **`/api/chat` gaps.** It has no idempotency key. Two contract quirks remain: a network error reaching the bridge returns 400, and proposals are not checked against the ledger until `/api/review`. These are task 2.6.
+- **Release checks block Phase 2.** `validateBuildOutput` in `scripts/ci/deployment.ts` rejects any `triggers` or `exports` on `saldo-api`, so the vault Durable Object and the keep-alive Cron need an explicit approval. This is task 2.0.
+
+### 3.3 Fate of the bridge code (`apps/bridge`)
+
+| File                                                                                   | Today                                                                                     | Fate                                                                                                                                                    |
+| -------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `auth.ts`                                                                              | Open-source SIWC OAuth: scopes, exchange, ID-token validation, refresh.                   | Moves to `apps/api/src/infrastructure/chatgpt/oauth.ts` (**new**) for the vault and hosted mode.                                                        |
+| `vault.ts`                                                                             | `SessionVault`: AES-GCM sealing, serialized refresh, uncertain-refresh marker.            | Basis of the `ChatGPTVault` Durable Object (**new**, `apps/api/src/infrastructure/chatgpt/vault.ts`), with the revised uncertain-refresh policy (§6.6). |
+| `inference.ts`                                                                         | Model catalog, Responses body, completed-only SSE parser, strict function-result parsing. | Moves to `apps/api/src/infrastructure/chatgpt/responses.ts` (**new**) with near-verbatim logic.                                                         |
+| `crypto.ts`                                                                            | WebCrypto envelope and constant-time compare.                                             | Reused, adding a key ID and per-record AAD.                                                                                                             |
+| `container.ts`, `cloudflare.ts`, `Dockerfile`, `transfer.ts`                           | Node container doing inference; chunked-secret import.                                    | **Retired** (§9.6). Pairing with one-time-key encryption replaces chunked secrets.                                                                      |
+| `bootstrap.ts`                                                                         | Owner-run loopback sign-in CLI with encrypted local token state.                          | **Rewritten** as the stateless helper in `packages/connect` (**new**, published as `@reidond/saldo-connect`).                                           |
+| `apps/api/src/infrastructure/ai/bridge-provider.ts`                                    | `AiProvider` over the `AI` binding with `AI_BRIDGE_SECRET`.                               | Replaced by the ChatGPT plan provider. The `AI` binding and secret are removed from `saldo-api` in task 2.8.                                            |
+| Deployed `saldo-ai-bridge` (Worker, Container `saldo-ai-bridge-saldoai`, `SaldoAI` DO) | Deployed by `cf` since #7/#8; no account connected.                                       | Dropped from the pipeline in 2.8. Teardown is a **separate owner-approved action**.                                                                     |
 
 ---
 
@@ -211,15 +251,14 @@ flowchart LR
   end
   subgraph CF["Cloudflare (owner's account)"]
     ACC["Cloudflare Access<br/>app: saldo.sands.red<br/>owner-only policy"]
-    WEB["apps/web Worker<br/>RSC + SSR + assets<br/>verifies Access JWT"]
-    API["apps/api Worker (Elysia)<br/>NO public route<br/>re-verifies Access JWT"]
-    VAULT[("ChatGPTVault DO<br/>per user, encrypted tokens<br/>serialized refresh")]
-    D1[("D1<br/>users, identities, audit,<br/>provider_connections, ai_requests,<br/>subscriptions")]
-    R2[("R2 private<br/>attachments")]
-    BR["apps/bridge + Container<br/>(retired after Phase 2)"]
+    WEB["saldo-web (apps/web)<br/>RSC + SSR + assets<br/>gate verifies Access JWT"]
+    API["saldo-api (apps/api, Elysia)<br/>no route, binding only<br/>re-verifies Access JWT"]
+    VAULT[("ChatGPTVault DO (new)<br/>in saldo-api, per user<br/>sealed tokens, serialized refresh")]
+    D1[("D1 saldo<br/>users, identities, audit,<br/>provider_connections, ai_requests,<br/>subscriptions")]
+    BR["saldo-ai-bridge + Container<br/>(retired in Phase 2)"]
   end
   subgraph PC["Owner's computer (interim only)"]
-    HELPER["tools/saldo-connect<br/>loopback sign-in, one-shot"]
+    HELPER["@reidond/saldo-connect<br/>loopback sign-in, one-shot"]
   end
   subgraph OAI["OpenAI"]
     AUTH["auth.openai.com<br/>authorize, token, revoke, JWKS"]
@@ -227,157 +266,128 @@ flowchart LR
   end
   UI -- "HTTPS + CF_Authorization cookie" --> ACC
   ACC -- "Cf-Access-Jwt-Assertion" --> WEB
-  WEB -- "service binding<br/>forwards JWT" --> API
+  WEB -- "API service binding<br/>forwards JWT" --> API
   API --> D1
-  API --> R2
   API -- "DO stub" --> VAULT
   VAULT -- "refresh / revoke" --> AUTH
-  API -- "exchange code, verify id_token" --> AUTH
+  API -- "verify id_token" --> AUTH
   API -- "Bearer access token<br/>store:false, stream:true" --> RESP
-  UI -. "top-level redirect<br/>(consent)" .-> AUTH
-  API -. "no longer called" .-> BR
+  UI -. "top-level redirect<br/>(hosted mode only)" .-> AUTH
+  API -. "AI binding<br/>(removed in Phase 2)" .-> BR
   HELPER -. "loopback OAuth<br/>(interim)" .-> AUTH
-  HELPER -. "sealed bundle via Access<br/>or paste in Settings" .-> ACC
+  HELPER -. "sealed bundle via Access (cloudflared)<br/>or paste in Settings" .-> ACC
 ```
 
 Trust boundaries:
 
 1. **Browser ↔ Access edge.** Access blocks everything without a valid session, on all paths.
-2. **Edge ↔ `apps/web`.** The web Worker verifies the signed JWT and does not trust the edge blindly (spec §9).
-3. **`apps/web` ↔ `apps/api`.** This is a service binding only. The API re-verifies the forwarded JWT and enforces ownership.
-4. **`apps/api` ↔ `ChatGPTVault`.** Only the API holds the DO binding. The vault returns short-lived access tokens only, never refresh or ID tokens.
-5. **`apps/api` ↔ OpenAI.** Requests go only to the fixed origins `https://auth.openai.com` and `https://api.openai.com`, never to a URL supplied by the user or the model.
+2. **Edge ↔ `saldo-web`.** `gate.ts` verifies the signed JWT before anything renders. It does not trust the edge blindly (spec §9).
+3. **`saldo-web` ↔ `saldo-api`.** The service binding is the only path in. The API re-verifies the forwarded JWT and enforces ownership.
+4. **`saldo-api` ↔ `ChatGPTVault`.** Only `saldo-api` holds the DO binding. The vault returns short-lived access tokens only, never refresh or ID tokens.
+5. **`saldo-api` ↔ OpenAI.** Only the fixed origins `https://auth.openai.com` and `https://api.openai.com` are called, never a URL supplied by the user or the model.
 
 ---
 
 ## 5. Part A — Login with Cloudflare Access
 
-### 5.1 Sign-in experience
+### 5.1 Sign-in experience (done: #4, #5)
 
-1. The owner opens `https://saldo.sands.red`. Access shows its login page (the IdP chosen by the owner, see §11 Q3) and sets `CF_Authorization` on `saldo.sands.red`.
-2. Each request reaches `apps/web` with `Cf-Access-Jwt-Assertion`. The web Worker verifies it (§5.4), calls `GET /v1/me` over the binding, and renders.
-3. On first sign-in the API provisions the owner (§5.3). The UI then shows onboarding (spec §4): data handling, an optional **Connect ChatGPT**, and preferences.
+1. The owner opens `https://saldo.sands.red`. Access shows its login page (IdP choice: §11 Q3) and sets `CF_Authorization` on the app domain.
+2. Every request reaches `saldo-web` with `Cf-Access-Jwt-Assertion`.
+   - `gate.ts` verifies it with `verifyAccess` and only then creates the request context.
+   - Pages read the user through `getRequestContext().load.me` → `ApiClient.me()` → `GET /api/me` over the binding.
+3. The first authenticated `/api/*` request provisions the owner (§5.3). Onboarding (spec §4) shows data handling, an optional **Connect ChatGPT plan**, and display preferences.
 
-There is no Saldo password, no app-level login form, and no second session cookie. Spec open decision §15.3 is answered: **Access is the session**, plus the app-level `sessions_valid_after` check.
+There is no Saldo password, no app login form and no second session cookie. Spec open decision §15.3 is answered: **Access is the session**, plus the app-level `sessions_valid_after` check.
 
 ### 5.2 Session duration and sign-out
 
-**Recommended Access settings** (owner decision, §11 Q3; nothing is changed by this plan):
+**Recommended Access settings** (owner decision §11 Q3; nothing is changed by this plan):
 
-- Application session: 24 hours (the default).
-- Global session: 7 days, so the phone rarely re-prompts the IdP while app tokens still expire daily.
-- **HttpOnly** on and **SameSite = Lax** (Strict breaks the ChatGPT OAuth return and causes Access redirect loops).
-- **Binding Cookie off.** Cloudflare says not to use it with non-browser tools, and the paired connect uploads through `cloudflared`. Stolen-cookie risk is reduced instead by the daily app session, `sessions_valid_after` on sign-out, and admin revocation.
-- Keep `workers_dev:false` and `preview_urls:false` on both Workers.
+- Application session 24 hours (the default); global session 7 days.
+- HttpOnly on and SameSite **Lax**. Strict breaks the ChatGPT OAuth return and causes Access redirect loops.
+- **Binding Cookie off.** It is incompatible with non-browser tools such as the `cloudflared` upload. Stolen-cookie risk is reduced instead by the daily app session, `sessions_valid_after` and admin revocation.
+- `workersDev: false` and `previewUrls: false` on every Worker (already enforced by #8).
 
-**Sign-out flow:**
+**Today (#5):** Sign out is a link to `/cdn-cgi/access/logout`. That ends the Access session for every Access app within 20–30 seconds, but already issued JWTs stay valid in Saldo until then.
+
+**Open (task 1.5):** make sign-out immediate in Saldo as well.
 
 ```mermaid
 sequenceDiagram
   autonumber
   actor O as Owner
-  participant W as apps/web
-  participant A as apps/api
+  participant W as saldo-web
+  participant A as saldo-api
   participant D as D1
   participant E as Access edge
-  O->>W: POST Sign out (server action, same-origin)
-  W->>W: verify Access JWT
-  W->>A: POST /v1/session/sign-out (forward JWT)
-  A->>A: verify JWT, resolve actor
-  A->>D: users.sessions_valid_after = now (one statement)
-  A->>D: audit_events insert "session.signed_out"
+  O->>W: POST Sign out (server action signOut, same-origin)
+  W->>W: gate verifies Access JWT
+  W->>A: POST /api/session/sign-out (forwarded JWT, Origin APP_ORIGIN)
+  A->>A: actorApp guard resolves actor
+  A->>D: users.sessions_valid_after = now (updateUserSessionsValidAfterStatement)
+  A->>D: audit_events insert session.signed_out
   A-->>W: 200 { logoutPath: "/cdn-cgi/access/logout" }
-  W-->>O: 303 Location /cdn-cgi/access/logout
+  W-->>O: redirect to SIGN_OUT_HREF
   O->>E: GET /cdn-cgi/access/logout
-  E-->>O: clears CF_Authorization, revokes Access session (all Access apps)
+  E-->>O: clears CF_Authorization, revokes the Access session (all Access apps)
 ```
 
-- `sessions_valid_after` (Unix seconds) makes old JWTs fail **immediately**, covering Access's 20–30-second revocation window. Both Workers reject a JWT whose `iat <= sessions_valid_after`. A new login issues a later `iat`.
-- UI copy states that this signs the owner out of Saldo **and other apps protected by the same Cloudflare Access team**, because Access logout is global.
-- CSP: keep `form-action 'self'`. Add `https://<team>.cloudflareaccess.com` only if a browser test shows the logout redirect chain needs it (Phase 1 acceptance).
+- `IdentityService.resolveActor` already rejects `iat <= sessions_valid_after` with 401 (#4). Setting the field closes the 20–30-second window at once.
+- **API:** a **new** route file `src/http/routes/session.ts` → **new** `IdentityService.signOut(actor)` → **new** repository function `updateUserSessionsValidAfterStatement`, plus the existing `insertAuditEventStatement`, run in one `db.batch`.
+- **Web:** a **new** `ApiClient.signOut()` and a **new** `signOut` server action in `src/server/actions.ts`. The `<a href={SIGN_OUT_HREF}>` in `app-shell.tsx`, `account-menu.tsx` and `settings.tsx` becomes a form that posts the action, then navigates to `SIGN_OUT_HREF`.
+- **Browser check:** CSP keeps `form-action 'self'` (`src/server/http.ts`). Test the logout redirect chain in Chrome, Safari and Firefox mobile, and add the team domain to `form-action` only if a browser needs it.
+- **Expired Access session during client navigation:** the API's 401 is already shown as "Your session expired. Reload to sign in again." (#5). What remains (task 1.11) is to check what an _edge_ expiry does to RSC navigations and server actions. If `X-Requested-With: XMLHttpRequest` can be sent from `src/framework/navigation.tsx`, Access returns 401 instead of a redirect. Otherwise, detect a redirected or non-RSC response and show the same message, keeping the tab-only drafts store.
 
-**Expired session during client-side calls.** Wherever the framework allows custom headers, send `X-Requested-With: XMLHttpRequest` on RSC and server-action fetches so Access returns 401. Otherwise, treat a redirected, opaque or non-RSC response as an expired session. Either way, show "Your session expired. Reload to sign in again." and keep any unsent draft in memory.
+### 5.3 Mapping the Access identity to a `users` record (done: #4)
 
-### 5.3 Mapping the Access identity to a `users` record
+`IdentityService` (`apps/api/src/services/identity-service.ts`) uses only verified claims: `iss`, `sub`, `iat`, plus `email` and `name` for display, at most 320 and 160 characters. The `Cf-Access-Authenticated-User-Email` header is never read.
 
-Inputs come only from a **verified** JWT: `iss`, `sub`, `aud`, `iat`, `exp`, and `email` (signed, used for display only). The `Cf-Access-Authenticated-User-Email` header and any unsigned identity header are ignored.
+- `authenticate(token)` returns a `Principal` only if the team domain matches `*.cloudflareaccess.com`, the JWT verifies, and `sub === OWNER_SUB`.
+- `resolveActor(principal)` works like this:
+  1. Look up `findUserByIdentity` for (`cloudflare_access`, `iss`, `sub`).
+  2. If there is no match, `#linkOwner` runs one `db.batch`:
+     - `ensureAccountStatement(account_id = sub)`;
+     - `insertUserStatement(role "owner")`, but only when no owner exists yet;
+     - `insertUserIdentityStatement`;
+     - `insertAuditEventStatement("identity.linked")`.
+       A concurrent first request is handled by re-reading after a batch conflict.
+  3. Reject `status !== "active"` or `role !== "owner"` with 403, and `iat <= sessionsValidAfter` with 401.
+  4. Refresh the profile and `last_seen_at`, at most every 10 minutes.
+- **What changed from the original plan**, forced by the additive-migration grammar:
+  - Length limits are enforced in code.
+  - The single owner per account is enforced by the service, not a partial unique index.
+  - `account_id` is the owner's Access subject, the key existing rows already use.
+- **Subject rotation.** If the owner is removed and re-added in Zero Trust, their `sub` changes. Updating `OWNER_SUB`, a release setting, relinks the existing owner and records `identity.linked`. Nothing is ever linked by email match.
+- **`get-identity`** is not used, and there is no plan to use it. The signed claims are enough for display.
 
-```text
-resolveActor(jwt):
-  claims = verifyAccessJwt(jwt)            # signature, iss, aud, exp, nbf, type=="app", sub non-empty
-  identity = findIdentityByIssuerSubject("cloudflare_access", claims.iss, claims.sub)
-  if identity:
-      user = findUserById(identity.user_id)
-  else if claims.sub == env.OWNER_SUB:      # owner-only bootstrap / relink
-      user = findOwnerUser()
-      batch:
-        if !user: ensureAccount(id = OWNER_SUB)            # INSERT OR IGNORE keeps existing data
-                  insertUser(account_id = OWNER_SUB, role = 'owner')
-        insertIdentity(provider, iss, sub, user.id)
-        insertAuditEvent('identity.linked')
-  else:
-      deny 403 "This Saldo instance is private."           # Access policy should already block
-  if user.status != 'active'               -> 403
-  if claims.iat <= user.sessions_valid_after -> 401 (session ended)
-  if user.role != 'owner'                  -> 403          # owner-only enforcement today
-  touchIdentityLastSeen (throttled, at most once per 10 minutes)
-  return Actor { userId, accountId, role, displayName, email }
-```
+### 5.4 How each Worker verifies identity (done: #4, #5)
 
-Notes:
+- **`saldo-web`.** `verifyAccess` in `src/server/access.ts` uses jose's remote JWKS from `https://<team>/cdn-cgi/access/certs`, and checks RS256, issuer, audience, expiry, non-empty `sub` and `type: "app"`, with 5 seconds of skew. `gate.ts` runs it for every request, assets included, and returns the static 401 page on failure. Only the verified token is forwarded.
+- **`saldo-api`.** `createAccessTokenVerifier` (`src/infrastructure/access-verifier.ts`) is wrapped by `IdentityService.authenticate`. It is used by the `ownerApp` and `actorApp` guards and by `/api/status`.
+  - **Open (task 1.10):** also require `payload.type === "app"`, and add the jose `clockTolerance: 5` used on the web, so both Workers accept exactly the same tokens.
+- **No shared package.** The original plan proposed `packages/access-auth`. The merged code keeps one small verifier per Worker, each with its own tests (`apps/web/tests/server.test.ts`, `apps/api/tests/infrastructure/access-verifier.test.ts`). That is acceptable: `packages/domain` must stay free of Worker APIs.
+- **Why not `ctx.access`?** It is not propagated across service bindings, and Workers with static assets never receive it (§2.2).
+- **Why not Linked App Tokens or an extra shared secret?** The API has no hostname, and #8's smoke checks prove it stays unreachable except through the binding.
+- **Service-token JWTs** (`sub: ""`) are refused on every path. There is no health endpoint that accepts them; the deploy smoke checks use anonymous requests only.
 
-- **No data rewrite.** The existing `accounts.id` holds the owner's Access `sub`. The new `users.account_id` points at that row, and `subscriptions` and related tables stay keyed by `account_id`.
-- **Subject rotation.** If the owner is removed and re-added in Zero Trust, the `sub` changes. The fix is a privileged config change to `OWNER_SUB`. The next login then links the new identity to the **existing** owner user and records an audit event. There is never an automatic link by email match.
-- **`get-identity`** is optional and display-only. It may be called once at provisioning, or from a "refresh profile" action, to fill `display_name`. It is never used for authorization, and its IP, geo and device data are discarded. It is not on the request path.
+### 5.5 UI (done: #5; sign-out form in task 1.5)
 
-### 5.4 How each Worker verifies identity
-
-A tiny shared platform package, `packages/access-auth`, keeps `packages/domain` free of bindings. It contains:
-
-```ts
-verifyAccessJwt(token, { teamDomain, audiences, clockToleranceSec: 5 }): Promise<AccessClaims>
-// jose.createRemoteJWKSet(`https://${teamDomain}/cdn-cgi/access/certs`), cached per isolate
-// jwtVerify(token, jwks, { issuer: `https://${teamDomain}`, audience: audiences, algorithms: ["RS256"],
-//                          requiredClaims: ["sub","exp","iat"] })
-// then: typeof sub === "string" && sub.length > 0 && type === "app"
-```
-
-- **`apps/web`.**
-  - The entry handler runs before any RSC render, server action or route handler, including asset responses (keep `run_worker_first`, matching today's fail-closed assets).
-  - A missing or invalid JWT returns a static 401 page with no app data.
-  - The verified token is forwarded to the API in `Cf-Access-Jwt-Assertion`, together with a generated `X-Request-Id`.
-  - **The browser's `Cookie` header is never forwarded.**
-- **`apps/api`.**
-  - An Elysia `derive` and `beforeHandle` plugin runs on every route: it reads the forwarded header, verifies it with the same team domain and AUD as the web app, then calls `IdentityService.resolveActor`.
-  - Handlers receive `actor` and nothing else about identity.
-  - The API has **no** routes, custom domain, `workers.dev` or previews, so it is reachable only via the web Worker's binding.
-- **Why not `ctx.access`?** It is not propagated across bindings and is missing for asset Workers (§2.2).
-- **Why not Linked App Tokens?** They are for Access-protected hostnames calling other Access-protected hostnames. The API has no hostname.
-- **Why not an extra shared secret?** It adds little. An attacker would need a valid owner JWT anyway, and deploy-time checks (§10, Phase 1) guarantee the API has no public route.
-- **Service-token JWTs** (`sub: ""`) are rejected on every user route. If CI smoke tests need an authenticated probe, they use a dedicated `/v1/healthz` that returns no data.
-
-### 5.5 UI
-
-- **Header account menu.** Shows the avatar initial and display name, or the email from the verified JWT. The menu contains "Signed in with Cloudflare Access", the email, **Settings**, and **Sign out**.
-- **Settings → Account card.**
-  - Fields: name, email, and the role "Owner".
-  - Text: "Sign-in is managed by Cloudflare Access", with the session-expiry hint "Session renews daily".
-  - Actions: **Sign out**, and a link to the owner's Access App Launcher if one is configured.
-- **Settings → ChatGPT card** is separate, and its copy makes clear that app sign-in does **not** enable AI (spec §4).
-- **Error pages.**
-  - 401 (session ended): "Signed out — Sign in again".
-  - 403 (not the owner): "This Saldo instance is private." No data is shown.
+- **Account block and menu.** `AccountBlock` in `app-shell.tsx` and `AccountMenu` show the display name or email from `/api/me` ("Signed in with Access") and **Sign out**.
+- **Settings → Account card.** Name, email and role "Owner", with: "Sign-in is managed by Cloudflare Access; there is no separate Saldo password. Signing out ends your session for every app behind the same Access team."
+- **Settings → ChatGPT card.** It is separate from the Account card, and its copy says that app sign-in does **not** connect AI (spec §4). Phase 2 replaces it with the state-driven card (§6.1).
+- **Error pages.** The gate's static 401 (signed out) and 503 (unconfigured) pages; API 403 shows "This request was refused."
 
 ### 5.6 What changes for more users (not in scope; design does not block it)
 
-| Area          | Today (owner-only)            | Multi-user later                                                                                                                                                                                                                             |
-| ------------- | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Access policy | Owner's identity only.        | Invited emails or an IdP group. Zero Trust seat limits apply.                                                                                                                                                                                |
-| Provisioning  | `sub == OWNER_SUB` bootstrap. | `invitations(id, email_normalized, role, account_id, expires_at, accepted_at)`. The first verified login whose JWT email matches an open invitation is linked, and the owner sees an audit event. `OWNER_SUB` remains the break-glass owner. |
-| Authorization | `role == 'owner'` gate.       | Role checks per service. Every query stays scoped by `account_id` and, for personal resources, by `user_id`.                                                                                                                                 |
-| Accounts      | One account.                  | One account per user. Shared households stay out of scope (spec §3).                                                                                                                                                                         |
-| ChatGPT       | Owner's own plan.             | **Each user connects their own plan.** One user's ChatGPT grant is never shared with another; this is enforced by `UNIQUE(user_id, provider)` and a per-user DO name.                                                                        |
-| Revocation    | Sign-out plus Access logout.  | Admin sets `users.status='disabled'` (immediate) and revokes the user in Access.                                                                                                                                                             |
+| Area          | Today (owner-only)                                 | Multi-user later                                                                                                                                                                                                                                     |
+| ------------- | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Access policy | Owner's identity only.                             | Invited emails or an IdP group. Zero Trust seat limits apply.                                                                                                                                                                                        |
+| Provisioning  | `sub == OWNER_SUB` bootstrap in `IdentityService`. | **New** `invitations(id, email_normalized, role, account_id, expires_at, accepted_at)`. The first verified login whose JWT email matches an open invitation is linked, and the owner sees an audit event. `OWNER_SUB` remains the break-glass owner. |
+| Authorization | `role === "owner"` check in `resolveActor`.        | Role checks per service. Every query stays scoped by `account_id`, and personal resources also by `user_id`.                                                                                                                                         |
+| Accounts      | One account (`account_id` = owner `sub`).          | One account per user. Shared households stay out of scope (spec §3).                                                                                                                                                                                 |
+| ChatGPT       | Owner's own plan.                                  | **Each user connects their own plan.** One user's grant is never shared, enforced by `UNIQUE(user_id, provider)` and a per-user DO name.                                                                                                             |
+| Revocation    | Sign-out plus Access logout.                       | Admin sets `users.status = 'disabled'` (immediate 403) and revokes the user in Access.                                                                                                                                                               |
 
 ---
 
@@ -387,7 +397,7 @@ verifyAccessJwt(token, { teamDomain, audiences, clockToleranceSec: 5 }): Promise
 
 `ConnectionState` lives in `packages/domain`, is mirrored in D1, and the vault is authoritative for whether tokens exist.
 
-The **connect mode** (`CHATGPT_CONNECT_MODE` on `apps/api`) decides only how the connect step works:
+The **connect mode** (`CHATGPT_CONNECT_MODE`, a constant in `apps/api/cloudflare.config.ts`; §8.4) decides only how the connect step works:
 
 - `hosted`: an OpenAI-issued client is configured.
 - `paired_local`: the interim default (§6.12).
@@ -451,15 +461,15 @@ This section applies to hosted mode; paired mode uses open-source dynamic regist
 
 The owner submits the interest form and selects _Sign in and ChatGPT plan use for AI requests_. If OpenAI approves, the owner records the following in private config only:
 
-| Item               | Expected value (to confirm)                                                                                        | Where                                                                                          |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
-| Client ID          | `oaiapp_…`                                                                                                         | `apps/api` var `CHATGPT_CLIENT_ID`. Required for `hosted` mode.                                |
-| Client type        | public (`none`) or confidential (`client_secret_basic`)                                                            | If confidential: `apps/api` **secret** `CHATGPT_CLIENT_SECRET`, sent only in the Basic header. |
-| Redirect URI       | **exactly** `https://saldo.sands.red/settings/chatgpt/callback`                                                    | `apps/api` var `CHATGPT_REDIRECT_URI`. Compared byte-for-byte.                                 |
-| Issuer / discovery | `https://auth.openai.com` + `/.well-known/openid-configuration`                                                    | Code constant; endpoints loaded from discovery, issuer must match exactly.                     |
-| Scopes             | `openid profile email offline_access resource.invoke chatgpt.tokens.use.direct` (U2)                               | `CHATGPT_SCOPES` var with this default.                                                        |
-| Resource           | `https://api.openai.com/v1` (U2)                                                                                   | Code constant.                                                                                 |
-| Host ID            | `ext_agent_host_id`, if required (U2): `urn:uuid:<v4>` generated once per deployment and persisted in the vault DO | Never derived from user data.                                                                  |
+| Item               | Expected value (to confirm)                                                                                        | Where                                                                                                                                |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Client ID          | `oaiapp_…`                                                                                                         | Release setting `SALDO_CHATGPT_CLIENT_ID` → `saldo-api` var `CHATGPT_CLIENT_ID` (§8.4). Required for `hosted` mode.                  |
+| Client type        | public (`none`) or confidential (`client_secret_basic`)                                                            | If confidential: `saldo-api` **secret** `CHATGPT_CLIENT_SECRET` (set with `cf workers secrets bulk`), sent only in the Basic header. |
+| Redirect URI       | **exactly** `https://saldo.sands.red/settings/chatgpt/callback`                                                    | Release setting `SALDO_CHATGPT_REDIRECT_URI` → `saldo-api` var `CHATGPT_REDIRECT_URI`. Compared byte-for-byte.                       |
+| Issuer / discovery | `https://auth.openai.com` + `/.well-known/openid-configuration`                                                    | Code constant; endpoints loaded from discovery, issuer must match exactly.                                                           |
+| Scopes             | `openid profile email offline_access resource.invoke chatgpt.tokens.use.direct` (U2)                               | `CHATGPT_SCOPES` var with this default.                                                                                              |
+| Resource           | `https://api.openai.com/v1` (U2)                                                                                   | Code constant.                                                                                                                       |
+| Host ID            | `ext_agent_host_id`, if required (U2): `urn:uuid:<v4>` generated once per deployment and persisted in the vault DO | Never derived from user data.                                                                                                        |
 
 ### 6.4 Connect flow (hosted mode)
 
@@ -468,8 +478,8 @@ sequenceDiagram
   autonumber
   actor O as Owner (browser)
   participant E as Access edge
-  participant W as apps/web
-  participant A as apps/api
+  participant W as saldo-web
+  participant A as saldo-api
   participant V as ChatGPTVault DO
   participant D as D1
   participant OA as auth.openai.com
@@ -477,7 +487,7 @@ sequenceDiagram
   O->>E: POST /settings/chatgpt/connect (form)
   E->>W: + Cf-Access-Jwt-Assertion
   W->>W: verify JWT
-  W->>A: POST /v1/ai/chatgpt/authorize (JWT)
+  W->>A: POST /api/ai/chatgpt/authorize (JWT)
   A->>A: resolve actor (owner), state must be not_connected / reconnect / permission_missing
   A->>V: beginAuthorization(userId)
   V->>V: state, nonce (32B), PKCE verifier (64B) + S256, txId, expires 10m, one pending tx max
@@ -491,7 +501,7 @@ sequenceDiagram
   O->>E: GET callback (CF_Authorization sent: SameSite Lax/None)
   E->>W: + Cf-Access-Jwt-Assertion
   W->>W: verify JWT, read tx cookie, take ONLY code/state/error/scope/client_id, each single-valued
-  W->>A: POST /v1/ai/chatgpt/callback { txId, code?, state, error?, clientId? }
+  W->>A: POST /api/ai/chatgpt/callback { txId, code?, state, error?, clientId? }
   A->>V: consumeTransaction(userId, txId, state)  (one-time, unexpired, constant-time compare)
   alt error=access_denied
     A->>D: state = plan_permission_missing or not_connected, audit
@@ -524,7 +534,7 @@ Rules:
 | Criterion                                      | D1 + AES-GCM key (Worker secret)                                                                                                               | Durable Object vault (today's design)                                                                            |
 | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | Serializing rotating refresh                   | Needs a compare-and-swap lease column, waiter polling and lease-expiry semantics. Easy to get subtly wrong and trigger `refresh_token_reused`. | A single-threaded actor with storage input/output gates. The existing `SessionVault` queue pattern carries over. |
-| Backups and exports                            | Encrypted tokens would end up in D1 Time Travel, `wrangler d1 export` and the pre-migration "recovery point" the CI takes.                     | Not in D1 backups. Tokens are recoverable by reconnecting, so they do not need backing up.                       |
+| Backups and exports                            | Encrypted tokens would end up in D1 Time Travel, D1 exports, and the pre-migration Time Travel bookmark the deploy job takes.                  | Not in D1 backups. Tokens are recoverable by reconnecting, so they do not need backing up.                       |
 | Queries and UI                                 | Easy.                                                                                                                                          | Needs a mirror.                                                                                                  |
 | Blast radius of a D1 read bug or SQL injection | Encrypted secrets readable alongside data.                                                                                                     | Secrets are not in D1 at all.                                                                                    |
 | Cost and complexity                            | Lowest.                                                                                                                                        | One DO class in `apps/api`; negligible traffic.                                                                  |
@@ -533,11 +543,11 @@ Rules:
 
 - **Vault DO (`ChatGPTVault`, one per user via `idFromName("chatgpt:" + userId)`) holds:** sealed `{access_token, refresh_token, id_token?, scopes, expires_at, earliest_refresh_at, refresh_expires_at, client_id, subject}`, the pending OAuth transaction, `host_id` (if needed) and the refresh-in-progress marker.
 - **Sealing:** AES-256-GCM with a 96-bit random IV. AAD = `saldo-chatgpt-vault-v1|{userId}|{record}`. The envelope carries a `kid`.
-- **Key:** `apps/api` secret `CHATGPT_VAULT_KEY` (32 random bytes, hex), with an optional `CHATGPT_VAULT_KEY_PREVIOUS` for rotation. Records are re-sealed with the current key on the next write.
+- **Key:** `saldo-api` secret `CHATGPT_VAULT_KEY` (32 random bytes, hex), set by the owner with `cf workers secrets bulk --worker saldo-api --file` (§8.4). An optional `CHATGPT_VAULT_KEY_PREVIOUS` supports rotation. Records are re-sealed with the current key on the next write.
 - **Encryption still matters** although DO storage is encrypted at rest by Cloudflare. It limits exposure through storage-level tooling and keeps `wrangler`/dashboard reads opaque.
 - **The DO API is narrow:** `beginAuthorization`, `consumeTransaction`, `storeGrant`, `getAccessToken({ forceRefresh? })`, `markReconnectRequired`, `revokeAndClear`, `status`. **No method returns a refresh or ID token.**
 - **D1 `provider_connections` holds** only non-secret metadata (§7): state, subject, client ID, label/email, scopes, expiries, capability flags, model, last error code and request ID.
-- **Write order:** vault first, then D1. `GET /v1/ai/status` reconciles drift by asking the vault for `status()`, which is authoritative for whether a grant exists.
+- **Write order:** vault first, then D1. `GET /api/ai/status` reconciles drift by asking the vault for `status()`, which is authoritative for whether a grant exists.
 
 ### 6.6 Refresh, rotation, revocation
 
@@ -552,7 +562,7 @@ Rules:
 - **Terminal refresh errors** (`invalid_grant`, `invalid_refresh_token`, `token_expired`, `refresh_token_expired`, `refresh_token_invalidated`, `refresh_token_reused`): clear the tokens and set `reconnect_required`. `invalid_client` sets `misconfigured`.
 - **Expiry.** The refresh token lives 30 days after the last refresh, so a connection unused for over 30 days expires.
   - Hosted mode: no background keep-alive by default.
-  - Paired mode, where reconnecting needs a computer: **weekly keep-alive (owner decision, 2026-10-08).** A Cron Trigger on `apps/api` (for example `17 3 * * 1`, Mondays 03:17 UTC) asks each paired connection's vault to refresh if its last refresh is more than 6 days old. This respects `earliest_refresh_at` and is serialized like any other refresh. A terminal error moves the connection to `reconnect_required` as usual. Settings shows "Kept alive weekly · last refreshed …".
+  - Paired mode, where reconnecting needs a computer: **weekly keep-alive (owner decision, 2026-10-08).** A Cron Trigger on `saldo-api`, `triggers.scheduled({ schedule: "17 3 * * 1" })` (for example `17 3 * * 1`, Mondays 03:17 UTC) asks each paired connection's vault to refresh if its last refresh is more than 6 days old. This respects `earliest_refresh_at` and is serialized like any other refresh. A terminal error moves the connection to `reconnect_required` as usual. Settings shows "Kept alive weekly · last refreshed …".
 - **Disconnect.**
   1. `revokeAndClear()` POSTs to the discovery `revocation_endpoint` with `token=<refresh>&token_type_hint=refresh_token&client_id` (plus Basic auth if confidential). Network failures and 5xx get up to 3 attempts with backoff.
   2. Tokens are cleared regardless. D1 records `revocation_confirmed`.
@@ -566,52 +576,68 @@ Rules:
 sequenceDiagram
   autonumber
   actor O as Owner
-  participant W as apps/web
-  participant A as apps/api (ChatService)
-  participant P as ChatGPTPlanProvider
+  participant W as saldo-web
+  participant A as saldo-api (ChatService)
+  participant P as ChatGPT plan provider
   participant V as ChatGPTVault DO
-  participant R2 as R2
   participant M as api.openai.com/v1
 
-  O->>W: send message (+ attachment ids)
-  W->>A: POST /v1/chat/messages {requestId, message, attachmentIds, history}
-  A->>A: actor, validate, idempotency: ai_requests insert (requestId unique) else 409/replay
-  A->>P: availability(userId)
+  O->>W: send message with screenshots (POST /chat/messages route handler)
+  W->>A: POST /api/chat {requestId, message, attachments, history}
+  A->>A: actorApp guard, chatSchema, idempotency via ai_requests (requestId unique)
+  A->>P: status(actor)
   alt not connected
-    A-->>W: 409 {ai: state, reason}  (nothing sent anywhere)
+    A-->>W: 409 {error, code} and nothing is sent anywhere
   else connected
-    A->>R2: read owned attachments (type/size/magic re-checked)
-    A->>P: extract(input, signal)
+    A->>P: extract(actor, input, signal)
     P->>V: getAccessToken()
-    V-->>P: access token only (refreshing if needed, serialized)
+    V-->>P: access token only (refreshed if needed, serialized)
     P->>M: GET /v1/models (cached per connection 1h)
-    P->>M: POST /v1/responses (store:false, stream:true, instructions, input[], namespaced tool, tool_choice required)
+    P->>M: POST /v1/responses (store:false, stream:true, instructions, input[], namespaced tool)
     M-->>P: SSE ... response.completed | response.failed | error
-    P->>P: completed-only parse, strict tool-args schema, proposals validated (domain)
+    P->>P: completed-only parse, strict tool-args schema
     P-->>A: {reply, proposals} | AiError(code)
-    A->>A: update connection state from error, ai_requests finish (metadata only)
-    A-->>W: {reply, proposals (unsaved), ai: status}
+    A->>A: validateReview against the ledger, update connection state, finish ai_requests
+    A-->>W: {reply, proposals (unsaved)}
   end
 ```
 
-Request construction (ported from `bridge/inference.ts`, matching the preview limitations):
+The web side already exists (#5): `apps/web/src/server/routes/chat.ts` (`handleChat`) is a route handler, so the browser can cancel it. It requires `Origin === APP_ORIGIN` and a bounded `Content-Length` (`CHAT_BODY_LIMIT = 12_000_000`), and it calls `ApiClient.chat`.
 
-- `model`: the owner's preference, if it is in the current `visibility=="list"` catalog; otherwise the first listed model. If the preference is no longer listed, fail with `MODEL_UNAVAILABLE` rather than switching silently.
-- `instructions`: the Saldo system prompt (§9.3). There are no `system` role items.
-- `input`: bounded history (≤ 20 turns, ≤ 60k characters, as today), then the current user turn: `input_text` with delimited **untrusted** context, plus up to 4 `input_image` items (`image_url: data:<type>;base64,…`, `detail: "auto"`).
-- `tools`: one namespace `saldo` with a single strict function `present_result`. `tool_choice: "required"` and `parallel_tool_calls: false`.
+What Phase 2 adds to `POST /api/chat`:
+
+- An optional `requestId` for idempotency. This is additive; the web generates one per send.
+- A machine-readable `code` on errors (§6.8).
+- Ledger validation of proposals before they are returned. This fixes the "proposals are not yet checked against the ledger" quirk in `apps/api/README.md`.
+
+`tests/http-contract.test.ts` and the README change together with it.
+
+Request construction (ported from `apps/bridge/inference.ts`, following the preview limitations):
+
+- **`model`:** the owner's preference if it is in the current `visibility=="list"` catalog, otherwise the first listed model. If the preference is no longer listed, fail with `MODEL_UNAVAILABLE` rather than switching silently.
+- **`instructions`:** the Saldo system prompt (§9.3). There are no `system` role items.
+- **`input`:** bounded history (≤ 20 turns, ≤ 60k characters, as `chatSchema` already enforces), then the current user turn: `input_text` with delimited **untrusted** context, plus up to 4 `input_image` items (`image_url: data:<type>;base64,…`, `detail: "auto"`).
+- **`tools`:** one namespace `saldo` with a single strict function `present_result`; `tool_choice: "required"`, `parallel_tool_calls: false`.
 - **Never sent:** any field from the unsupported list, `previous_response_id`, hosted tools, file IDs, or image URLs other than data URLs.
-- **Limits:** 150-second upstream timeout; abort when the client disconnects; 2 MB response cap; the request body is built from R2 bytes (max 4 images and 7 MiB raw total, as today). **No automatic retries** of inference, to avoid double plan usage. The only exception is a single retry after a pre-stream 401 that was fixed by a forced refresh, since the first request was not admitted.
-- **Context minimization:** send only the subscription fields that extraction and duplicate matching need (id, name, plan, amount, currency, cadence, status, renewal date). Leave out notes and source text unless the owner's message refers to a specific record.
+- **Limits:**
+  - 150-second upstream timeout, aborted when the client disconnects (`request.signal` already reaches `ChatService.send`).
+  - 2 MB response cap.
+  - The existing 12,000,000-byte request cap and 4-image limit.
+  - **No automatic inference retries**, to avoid double plan usage. The one exception is a single retry after a pre-stream 401 fixed by a forced refresh, because the first request was not admitted.
+- **Context minimization:** today `ChatService.send` sends the whole ledger from `listSubscriptionsByAccount`. It should send only what extraction and duplicate matching need: id, name, amount, currency, cadence, status and renewal date. Notes and sources go only when the owner's message names that record.
 - **Images:**
-  - Supported only when the selected model accepts them (U5). The connection keeps `capabilities.images` as `unverified`, `verified` or `unsupported`.
-  - A 400 `subscription_sharing_unsupported_capability` whose `param` points at image input sets `unsupported` and shows "This model can't read images — choose another model in Settings".
+  - They arrive in the existing `/api/chat` body as data URLs. PNG, JPEG and WebP are magic-byte checked by `imageSchema`, up to 7 MB each.
+  - Storing originals in R2 (`FILES`, reserved and unused) stays out of scope until spec §15.5 decides retention.
+  - Image support depends on the model (U5). `capabilities.images` is `unverified`, `verified` or `unsupported`.
+  - A 400 `subscription_sharing_unsupported_capability` whose `param` points at an image sets `unsupported` and shows "This model can't read images — choose another model in Settings".
   - EXIF and GPS metadata are sent as-is unless the owner opts into stripping (§11 Q8).
-- **Workers settings:** `apps/api` keeps the default CPU limit (30 seconds); streaming waits on I/O. The **Workers Paid** plan is required for the CPU budget of RS256 verification plus SSE parsing; the Free plan allows only 10 ms.
+- **Workers settings:** `saldo-api` keeps the default 30-second CPU limit; streaming time is I/O, not CPU. The Workers Paid plan is required, because the Free plan's 10 ms is too little for RS256 verification plus SSE parsing.
 
 ### 6.8 Error and usage-limit mapping
 
 Upstream response bodies are never logged or forwarded. Only the HTTP status, `error.code`, `error.param` and the request ID (`openai-request-id` / `x-request-id`) are kept.
+
+`saldo-api` answers with the contract's `{error}` plus a machine-readable `code`. This is additive, because the web's `errorBodySchema` ignores unknown keys. `apps/web/src/server/api/binding.ts` maps the `code` to an `ApiErrorCode`. Today's `rate_limited` and `ai_unavailable` codes keep their meaning.
 
 | Upstream signal                                                                                                                                     | `AiErrorCode`                                           | Connection transition                         | API → web   | UI                                             |
 | --------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- | --------------------------------------------- | ----------- | ---------------------------------------------- |
@@ -632,85 +658,91 @@ Every error path guarantees **no proposals, no saved records, and no partial tex
 
 ### 6.9 AI-provider boundary
 
-In `packages/domain/src/ai/`, which has no Cloudflare or OpenAI imports:
+**Today (#4).** The port lives in `apps/api/src/services/ports.ts`:
 
 ```ts
-export type AiCapability = "text" | "images";
-export type CapabilityStatus = "verified" | "unverified" | "unsupported";
-export type AiAvailability =
-  | {
-      state: "connected";
-      provider: "chatgpt";
-      capabilities: Record<AiCapability, CapabilityStatus>;
-      model?: string;
-      accountLabel?: string;
-    }
-  | {
-      state: Exclude<ConnectionState, "connected">;
-      provider: "chatgpt" | "none";
-      reason: AiUnavailableReason;
-    };
-
 export interface AiProvider {
-  readonly id: "chatgpt" | "disabled";
-  availability(actor: Actor): Promise<AiAvailability>;
+  readonly enabled: boolean;
+  status(): Promise<{ connected: boolean }>;
   extract(
-    actor: Actor,
     input: ExtractionInput,
     signal: AbortSignal,
-  ): Promise<ExtractionResult>; // throws AiError(code)
+  ): Promise<ExtractionResult>;
 }
-export interface ExtractionInput {
-  message: string;
-  images: ValidatedImage[];
-  history: ChatTurn[];
-  context: SubscriptionContext[];
-}
-export interface ExtractionResult {
-  reply: string;
-  proposals: Proposal[];
-} // proposals NOT yet validated against the ledger
 ```
 
-- Production implementations: `ChatGPTPlanProvider` (in `apps/api`) and `DisabledProvider` (always `unavailable`). `AiProviderRegistry` picks ChatGPT when `CHATGPT_CONNECT_MODE` is `paired_local`, or `hosted` with a complete §6.3 config, and Disabled otherwise.
-- `FakeProvider` exists **only** in test code and is excluded from production builds by import boundaries and a test.
-- **No API-key or other-provider implementation may exist.** A CI test fails if the `apps/api` env schema or bundle contains `OPENAI_API_KEY`, `api_key` or another provider SDK.
-- `ChatService` and `ExtractionService` depend only on `AiProvider` plus domain validation. They **re-validate** proposals with `validateReview` against the current ledger before returning, and again on save.
-- Subscription CRUD, import, review, export and recurrence services **never import AI code**. A test asserts the module boundary, so manual workflows work with the Disabled provider.
+- The composition root (`src/worker.ts`) picks `createBridgeAiProvider(env.AI, env.AI_BRIDGE_SECRET)` when the `AI` binding exists, and `disabledAiProvider` otherwise.
+- Only `ChatService` depends on `AiProvider`, enforced by AGENTS.md and `tests/architecture.test.ts`, so subscription CRUD, review and export already work with AI disabled.
+- Errors are `AiNotConnectedError` (503) and `AiRequestFailedError(rateLimited)` (429/503), mapped in `src/http/errors.ts`.
+
+**Phase 2 changes:**
+
+- **Shared types.** `packages/domain` gets **new**, framework-free zod schemas `connectionStateSchema` and `aiAvailabilitySchema`, so the API's responses and the web's `binding.ts` validation share one definition:
+
+  ```ts
+  type AiAvailability =
+    | {
+        state: "connected";
+        provider: "chatgpt";
+        mode: "paired_local" | "hosted";
+        capabilities: { text: CapabilityStatus; images: CapabilityStatus };
+        model?: string;
+        accountLabel?: string;
+      }
+    | {
+        state: Exclude<ConnectionState, "connected">;
+        provider: "chatgpt" | "none";
+        mode: "paired_local" | "hosted" | "disabled";
+        reason: string;
+      };
+  ```
+
+- **The port takes the actor.** `status(actor)` returns `AiAvailability`, and `extract(actor, input, signal)` gets the actor too, because connections are per user. `/api/status` keeps its `aiConnected` boolean (`state === "connected"`) for compatibility.
+- **Errors.** **New** `AiError(code)` in `src/services/errors.ts`, mapped in `src/http/errors.ts` to the §6.8 statuses with `{error, code}`. The existing two classes remain for the disabled and bridge providers until 2.8.
+- **New implementation.** `createChatGPTPlanProvider` (`src/infrastructure/chatgpt/plan-provider.ts`, **new**) is composed in `src/worker.ts` unless `CHATGPT_CONNECT_MODE` is `disabled`. The bridge provider and the `AI` binding go in 2.8.
+- **No fallback, enforced by a test.** No API-key or other-provider implementation may exist. A **new** guard test in `apps/api/tests/` fails if `OPENAI_API_KEY`, `backend-api`, or another AI SDK appears in `apps/api/src` or `cloudflare.config.ts`.
+- **One AI consumer.** `ChatService` stays the only consumer. Connection management lives in the ChatGPT connection services, which depend on the vault port, not on `AiProvider`.
 
 ### 6.10 API surface
 
-All routes are on `apps/api`, prefixed `/v1`, and reachable only over the binding. Each requires a verified actor and returns `Cache-Control: no-store`. Response DTOs use strict zod schemas, and a test asserts that **no field anywhere** matches `/token|secret|verifier|nonce|code/` except the explicitly named `requestId` and `pairingCode`. `pairingCode` is the only secret-bearing response field. It is returned once, to the owner's browser, and is excluded from logs.
+Every route is on `saldo-api` under `/api/` and follows the contract rules in `apps/api/README.md`:
 
-| Method + path                                         | Purpose                                                                                                             | Handler → service                                                                         |
-| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `GET /v1/me`                                          | Current user (id, displayName, email, role)                                                                         | `MeRoute` → `IdentityService.describe`                                                    |
-| `POST /v1/session/sign-out`                           | Set `sessions_valid_after`, audit; return logout path                                                               | `SessionRoute` → `SessionService.signOut`                                                 |
-| `GET /v1/ai/status`                                   | `AiAvailability` + connection card data + manage-usage URL                                                          | `AiStatusRoute` → `AiProviderRegistry.availability` / `ChatGPTConnectionService.describe` |
-| `POST /v1/ai/chatgpt/authorize` (hosted)              | Begin transaction; return `authorizeUrl`, `txId`, `expiresAt`                                                       | `ChatGPTConnectionRoute` → `ChatGPTConnectionService.begin`                               |
-| `POST /v1/ai/chatgpt/callback` (hosted)               | Consume tx, exchange code, verify, store                                                                            | → `ChatGPTConnectionService.complete`                                                     |
-| `POST /v1/ai/chatgpt/pairings` (paired)               | Create a pairing; return `pairingCode` (shown once) and `expiresAt`. At most 3 per hour, and one pending at a time. | `ChatGPTPairingRoute` → `ChatGPTPairingService.create`                                    |
-| `GET /v1/ai/chatgpt/pairings/{id}` (paired)           | Pairing status (`pending`, `completed`, `expired`, `cancelled`) for the sheet and for helper preflight              | → `ChatGPTPairingService.status`                                                          |
-| `POST /v1/ai/chatgpt/pairings/{id}/complete` (paired) | `{secret, enc, ct}`: open, verify, prove, store; return the state                                                   | → `ChatGPTPairingService.complete`                                                        |
-| `DELETE /v1/ai/chatgpt/pairings/{id}` (paired)        | Cancel a pending pairing                                                                                            | → `ChatGPTPairingService.cancel`                                                          |
-| `POST /v1/ai/chatgpt/cancel`                          | Drop pending tx                                                                                                     | → `ChatGPTConnectionService.cancel`                                                       |
-| `POST /v1/ai/chatgpt/disconnect`                      | Revoke + clear; return `{revocation: "confirmed"\|"unconfirmed"}`                                                   | → `ChatGPTConnectionService.disconnect`                                                   |
-| `GET /v1/ai/chatgpt/models`                           | Listed models (slug, displayName)                                                                                   | → `ChatGPTConnectionService.models`                                                       |
-| `PUT /v1/ai/chatgpt/preferences`                      | `{ model }` (must be listed)                                                                                        | → `ChatGPTConnectionService.setModel`                                                     |
-| `POST /v1/ai/chatgpt/welcome-ack`                     | Record modal acknowledgement                                                                                        | → `ChatGPTConnectionService.ackWelcome`                                                   |
-| `POST /v1/chat/messages` (Phase 2)                    | Idempotent AI turn; returns reply + **unsaved** proposals                                                           | `ChatRoute` → `ChatService.send`                                                          |
-| `GET /v1/healthz`                                     | Liveness; no data; service-token allowed                                                                            | `HealthRoute`                                                                             |
+- Origin check before authentication on writes.
+- The `actorApp` guard.
+- `readBody` for bodies.
+- JSON errors as `{error}` plus an optional `code`.
+- `Cache-Control: no-store`.
 
-`apps/web` routes (framework-agnostic; server actions or route handlers):
+Each handler lives in a route file, validates input, calls one service method and returns `json(...)`. Routes are registered in `src/http/app.ts`. Each change also updates `tests/http-contract.test.ts` and the README.
 
-- `POST /settings/chatgpt/connect`: calls authorize, sets the tx cookie, then 303 to OpenAI.
-- `GET /settings/chatgpt/callback`: forwards to the API callback, clears the cookie, then 303 to `/settings?chatgpt=…`.
-- `POST /settings/chatgpt/disconnect` and `POST /session/sign-out`.
-- Paired mode:
-  - `POST /settings/chatgpt/pair` creates a pairing (server action) and shows the sheet.
-  - `POST /settings/chatgpt/pair/complete` accepts the pasted blob (same-origin server action).
-  - `GET|POST /connect/pairings/{id}` is the helper preflight and `cloudflared` upload route (task 2.4c). It is Access-protected like every path.
-  - That route is the only place that accepts a request with no `Origin` header, because the pairing secret is required. Any `Origin` other than `APP_ORIGIN` is rejected, and so is a body over 32 KB.
+A **new** DTO test asserts that no response field matches `/token|secret|verifier|nonce|code/`, except `requestId`, the error `code`, and `pairingCode`. `pairingCode` is the only secret-bearing response field: it is returned once, to the owner's browser, and never logged.
+
+| Method + path                                          | Purpose                                                                                                                          | Route file → service method                                  |
+| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------ |
+| `GET /api/me`                                          | Current user. **Exists (#4).**                                                                                                   | `routes/me.ts` → `IdentityService.describe`                  |
+| `POST /api/session/sign-out`                           | Set `sessions_valid_after`, audit; return `{logoutPath}`                                                                         | **new** `routes/session.ts` → `IdentityService.signOut`      |
+| `GET /api/ai/status`                                   | `AiAvailability` plus card data (account label, model, keep-alive, revocation note, manage-usage URL)                            | **new** `routes/ai.ts` → `ChatGPTConnectionService.describe` |
+| `POST /api/ai/chatgpt/pairings` (paired)               | Create a pairing; return `pairingCode` (shown once), `expiresAt` and `helperVersion`. At most 3 per hour, one pending at a time. | `routes/ai.ts` → `ChatGPTPairingService.create`              |
+| `GET /api/ai/chatgpt/pairings/{id}` (paired)           | Status (`pending`, `completed`, `expired`, `cancelled`) for the sheet and the helper preflight                                   | → `ChatGPTPairingService.status`                             |
+| `POST /api/ai/chatgpt/pairings/{id}/complete` (paired) | `{secret, enc, ct}`: open, verify, prove, store; return the state                                                                | → `ChatGPTPairingService.complete`                           |
+| `DELETE /api/ai/chatgpt/pairings/{id}` (paired)        | Cancel a pending pairing                                                                                                         | → `ChatGPTPairingService.cancel`                             |
+| `POST /api/ai/chatgpt/authorize` (hosted)              | Begin a transaction; return `authorizeUrl`, `txId` and `expiresAt`                                                               | → `ChatGPTConnectionService.begin`                           |
+| `POST /api/ai/chatgpt/callback` (hosted)               | Consume the transaction, exchange the code, verify, store                                                                        | → `ChatGPTConnectionService.complete`                        |
+| `POST /api/ai/chatgpt/disconnect`                      | Revoke and clear; return `{revocation: "confirmed"\|"unconfirmed"}`                                                              | → `ChatGPTConnectionService.disconnect`                      |
+| `GET /api/ai/chatgpt/models`                           | Listed models (slug, displayName)                                                                                                | → `ChatGPTConnectionService.models`                          |
+| `PUT /api/ai/chatgpt/preferences`                      | `{model}`, which must be listed                                                                                                  | → `ChatGPTConnectionService.setModel`                        |
+| `POST /api/ai/chatgpt/welcome-ack`                     | Record the welcome-modal acknowledgement                                                                                         | → `ChatGPTConnectionService.acknowledgeWelcome`              |
+| `POST /api/chat`                                       | **Exists (#4)**; gains `requestId`, error `code` and ledger-checked proposals                                                    | `routes/chat.ts` → `ChatService.send`                        |
+
+**`saldo-web` changes** (only `src/server/api` talks to the API):
+
+- **`ApiClient`** (`src/server/api/client.ts`) gets `signOut`, `aiStatus`, `createPairing`, `pairingStatus`, `completePairing`, `cancelPairing`, `disconnectChatGPT`, `listChatGPTModels`, `setChatGPTModel` and `acknowledgeWelcome`. Each has a zod schema in `binding.ts`, a `SyntheticApiClient` version, and new `ApiErrorCode` values (`usage_limited`, `reconnect_required`, `ineligible`, `ai_misconfigured`).
+- **`SALDO_SYNTHETIC_AI`** gains one value per §6.1 state for visual QA.
+- **Server actions** in `src/server/actions.ts` return result objects and call `invalidate()`: `signOut`, `startPairing`, `completePairingFromPaste`, `cancelPairing`, `disconnectChatGPT`, `chooseModel` and `acknowledgeWelcome`.
+- **Route handlers** are dispatched from `gate.ts` like `/chat/messages`, after the Access check:
+  - **New** `src/server/routes/connect.ts` serves `GET|POST /connect/pairings/{id}`, the helper's preflight and `cloudflared` upload (task 2.4c).
+  - It is the only route that accepts a request with no `Origin` header, because the pairing secret is required. Any `Origin` other than `APP_ORIGIN` is rejected, and so is a body over 32 KB.
+- **Hosted mode only:** `POST /settings/chatgpt/connect` and `GET /settings/chatgpt/callback`. The CSP's `form-action` (`src/server/http.ts`) then needs `https://auth.openai.com`. Paired mode needs no CSP change.
 
 ### 6.11 Interim options while U1 is unresolved (decided)
 
@@ -735,7 +767,7 @@ No undocumented endpoint is used, and no loopback code is ever redeemed by the s
 
 **Components**
 
-- **`tools/saldo-connect`.** A Node 24 CLI in the monorepo.
+- **`packages/connect`** (**new**; published as `@reidond/saldo-connect`, command `saldo-connect`). A Node 24 CLI in the workspace, bundled with `vp pack` so `@saldo/pairing` is inlined.
   - **Published to npm as `@reidond/saldo-connect`** (owner decisions, 2026-10-08), with the CLI command `saldo-connect`. It is run as `npx @reidond/saldo-connect@<exact version> <code>`. Settings shows the exact version that matches the deployed app, so `npx` never resolves a floating tag.
   - Published only from GitHub Actions with npm **trusted publishing** (OIDC, no long-lived npm token) and **provenance**, so each version is traceable to its repository commit.
   - The package contains only the helper: a `files` allowlist, minimal dependencies (`jose`, an HPKE library), and `engines.node >= 24`.
@@ -743,8 +775,9 @@ No undocumented endpoint is used, and no loopback code is ever redeemed by the s
   - It never stores tokens.
   - It persists only two non-secret files, both `0600`: `~/.config/saldo/host-id` (`urn:uuid:` v4) and `~/.config/saldo/registrations.json` (issued client ID, subject and email per ChatGPT account).
 - **`ChatGPTVault` DO.** Holds pairing records and one-time X25519 private keys.
-- **`apps/api`** exposes the pairing endpoints (§6.10).
-- **`apps/web`** shows the Settings pairing sheet and the helper upload route.
+- **`packages/pairing`** (`@saldo/pairing`, **new**) holds the code and blob formats and the HPKE seal and open, shared by the helper and `saldo-api`.
+- **`saldo-api`** exposes the pairing endpoints (§6.10). `ChatGPTPairingService` drives the `ChatGPTVault` DO.
+- **`saldo-web`** shows the Settings pairing sheet (`src/app/client/chatgpt-connect.tsx`) and the helper upload route (`src/server/routes/connect.ts`, dispatched from `gate.ts`).
 - **`cloudflared`** on the computer is used for the upload. If it is missing, the helper prints install guidance and falls back to paste.
 
 **Pairing code** (`saldo-pair-v1.<base64url JSON>`, about 300 characters):
@@ -763,7 +796,7 @@ The code is shown once, only inside the authenticated Settings page, with **Copy
 **Sealed bundle**
 
 - **Scheme:** HPKE (RFC 9180) base mode: DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, AES-256-GCM. `info = "saldo-pair-v1"`, `aad = pairing ID`.
-- **Implementation:** a maintained implementation that runs in both Node and Workers (for example `@hpke/core`), or the equivalent Web Crypto composition (both runtimes support X25519 and HKDF).
+- **Implementation:** in `@saldo/pairing`, either a maintained implementation that runs in both Node and Workers (for example `@hpke/core`, added to the catalog), or the equivalent Web Crypto composition (both runtimes support X25519 and HKDF).
 - **Plaintext:** `{v, pairingId, clientId, subject, email, nonce, tokens: {access_token, refresh_token, id_token, scopes, expires_at, earliest_refresh_at, saved_at}}`.
 - **Output:** `saldo-connect-v1.<base64url {i, s, enc, ct}>`, about 8 KB.
 
@@ -792,7 +825,7 @@ The code is shown once, only inside the authenticated Settings page, with **Copy
 6. **Deliver.**
    - **Upload** (primary; owner decision, 2026-10-08):
      - `POST https://saldo.sands.red/connect/pairings/{id}` with the `cf-access-token` header, through the normal Access edge. The Workers receive the usual `Cf-Access-Jwt-Assertion`, and no Access setting changes.
-     - The loopback success page then reads "Saldo is connected". The Settings sheet polls `GET /v1/ai/status` every 3 seconds while a pairing is pending, then flips to Connected.
+     - The loopback success page then reads "Saldo is connected". The Settings sheet polls `GET /api/ai/status` every 3 seconds while a pairing is pending, then flips to Connected.
    - **Paste** (fallback when `cloudflared` is missing or the upload fails):
      - The helper prints `saldo-connect-v1.…`, or copies it to the clipboard with `--copy`.
      - The owner pastes it into the pairing sheet, on the same computer or on a phone via clipboard sync.
@@ -813,15 +846,15 @@ The code is shown once, only inside the authenticated Settings page, with **Copy
 sequenceDiagram
   autonumber
   actor O as Owner
-  participant W as apps/web
-  participant A as apps/api
+  participant W as saldo-web
+  participant A as saldo-api
   participant V as ChatGPTVault DO
   participant H as saldo-connect (computer)
   participant OA as auth.openai.com
   participant M as api.openai.com/v1
 
   O->>W: Settings: Connect ChatGPT plan
-  W->>A: POST /v1/ai/chatgpt/pairings (JWT)
+  W->>A: POST /api/ai/chatgpt/pairings (JWT)
   A->>V: createPairing(userId, clientId?, loginHint?)
   V->>V: id, secret hash, one-time X25519 key pair, expires 10m
   V-->>A: pairing code
@@ -838,11 +871,11 @@ sequenceDiagram
   H->>H: verify id_token and plan scope, seal bundle to one-time key
   alt upload via cloudflared (primary)
     H->>W: POST /connect/pairings/{id} via Access edge (cf-access-token)
-    W->>A: POST /v1/ai/chatgpt/pairings/{id}/complete (JWT)
+    W->>A: POST /api/ai/chatgpt/pairings/{id}/complete (JWT)
   else paste fallback
     H-->>O: print saldo-connect-v1 blob
     O->>W: paste in Settings (same-origin)
-    W->>A: POST /v1/ai/chatgpt/pairings/{id}/complete (JWT)
+    W->>A: POST /api/ai/chatgpt/pairings/{id}/complete (JWT)
   end
   A->>V: completePairing(userId, id, secret, enc, ct)
   V->>V: consume, open, delete private key, verify id_token and scopes
@@ -871,161 +904,159 @@ sequenceDiagram
 
 ## 7. Data model (additive D1 migrations only)
 
-Numbering follows the final migration sequence in `apps/api/migrations` after rebase. No existing column or table is altered or dropped.
+**Done (#4):** `apps/api/migrations/0002_identity.sql` created `users`, `user_identities` and `audit_events` as designed in §5.3:
+
+- `users(id, account_id → accounts, role 'owner'|'member', status 'active'|'disabled', display_name, email, sessions_valid_after, created_at, updated_at)`
+- `user_identities(provider 'cloudflare_access', issuer, subject, user_id, created_at, last_seen_at)`, primary key `(provider, issuer, subject)`
+- `audit_events(id, account_id, actor_user_id, action, target_type, target_id, summary json, created_at)`
+
+**New (task 2.1):** `apps/api/migrations/0003_ai_connections.sql`, the next number. It must pass `scripts/ci/migrations.ts`, which accepts only a small additive subset:
+
+- No `IN`, so allowed values are written as `OR` chains.
+- No `length()`, so length limits are enforced in code.
+- No partial indexes.
+- `CHECK` may use comparisons, `AND`/`OR`/`NOT`, `json_valid`, and `IS [NOT] NULL` only at the end of an expression.
+- A `CHECK` on a nullable column already lets `NULL` through in SQLite, so no `IS NULL` clause is needed.
 
 ```sql
--- 000N_identity.sql  (Phase 1)
-CREATE TABLE IF NOT EXISTS users(
-  id TEXT PRIMARY KEY,                                   -- uuid v4
-  account_id TEXT NOT NULL REFERENCES accounts(id),      -- existing tenant row (today: owner's Access sub)
-  role TEXT NOT NULL CHECK(role IN ('owner','member')),
-  status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','disabled')),
-  display_name TEXT CHECK(display_name IS NULL OR length(display_name) <= 160),
-  email TEXT CHECK(email IS NULL OR length(email) <= 320), -- display only, from verified JWT
-  sessions_valid_after INTEGER NOT NULL DEFAULT 0,       -- unix seconds; JWT iat must be greater
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE UNIQUE INDEX IF NOT EXISTS users_one_owner_per_account ON users(account_id) WHERE role = 'owner';
-CREATE TABLE IF NOT EXISTS user_identities(
-  provider TEXT NOT NULL CHECK(provider IN ('cloudflare_access')),
-  issuer TEXT NOT NULL,                                  -- https://<team>.cloudflareaccess.com
-  subject TEXT NOT NULL CHECK(length(subject) BETWEEN 1 AND 500),
-  user_id TEXT NOT NULL REFERENCES users(id),
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  last_seen_at TEXT,
-  PRIMARY KEY(provider, issuer, subject)
-);
-CREATE INDEX IF NOT EXISTS user_identities_by_user ON user_identities(user_id);
-CREATE TABLE IF NOT EXISTS audit_events(
-  id TEXT PRIMARY KEY,
-  account_id TEXT NOT NULL REFERENCES accounts(id),
-  actor_user_id TEXT REFERENCES users(id),
-  action TEXT NOT NULL,                                  -- e.g. session.signed_out, identity.linked, chatgpt.connected
-  target_type TEXT, target_id TEXT,
-  summary TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(summary) AND length(summary) <= 2000), -- allow-listed keys only
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS audit_events_by_account_time ON audit_events(account_id, created_at);
-```
-
-```sql
--- 000N_ai_provider_connections.sql  (Phase 2)
 CREATE TABLE IF NOT EXISTS provider_connections(
   id TEXT PRIMARY KEY,
   account_id TEXT NOT NULL REFERENCES accounts(id),
   user_id TEXT NOT NULL REFERENCES users(id),
-  provider TEXT NOT NULL CHECK(provider IN ('chatgpt')),
-  state TEXT NOT NULL CHECK(state IN ('not_connected','connecting','plan_permission_missing','connected',
-    'usage_limited','temporarily_unavailable','ineligible','reconnect_required','misconfigured','disconnected')),
-  issuer TEXT, client_id TEXT, subject TEXT,             -- identifiers, not secrets
-  account_label TEXT, account_email TEXT,                -- from verified id_token, display only
-  granted_scopes TEXT CHECK(granted_scopes IS NULL OR json_valid(granted_scopes)),
+  provider TEXT NOT NULL CHECK(provider = 'chatgpt'),
+  state TEXT NOT NULL CHECK(state = 'not_connected' OR state = 'connecting' OR state = 'plan_permission_missing'
+    OR state = 'connected' OR state = 'usage_limited' OR state = 'temporarily_unavailable' OR state = 'ineligible'
+    OR state = 'reconnect_required' OR state = 'misconfigured' OR state = 'disconnected'),
+  connection_mode TEXT CHECK(connection_mode = 'hosted' OR connection_mode = 'paired_local'),
+  issuer TEXT, client_id TEXT, subject TEXT,
+  account_label TEXT, account_email TEXT,
+  granted_scopes TEXT CHECK(json_valid(granted_scopes)),
   capabilities TEXT NOT NULL DEFAULT '{"text":"unverified","images":"unverified"}' CHECK(json_valid(capabilities)),
-  connection_mode TEXT CHECK(connection_mode IN ('hosted','paired_local')),
   selected_model TEXT,
-  access_expires_at INTEGER, refresh_expires_at INTEGER, last_refreshed_at INTEGER, -- metadata mirror
+  access_expires_at INTEGER, refresh_expires_at INTEGER, last_refreshed_at INTEGER,
   last_error_code TEXT, last_error_at TEXT, last_upstream_request_id TEXT,
   welcome_acknowledged_at TEXT,
-  connected_at TEXT, disconnected_at TEXT, revocation_confirmed INTEGER CHECK(revocation_confirmed IN (0,1)),
+  connected_at TEXT, disconnected_at TEXT,
+  revocation_confirmed INTEGER CHECK(revocation_confirmed = 0 OR revocation_confirmed = 1),
   version INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE(user_id, provider)
 );
+CREATE INDEX IF NOT EXISTS provider_connections_by_account ON provider_connections(account_id);
 CREATE TABLE IF NOT EXISTS ai_requests(
-  id TEXT PRIMARY KEY,                                   -- client idempotency key (uuid)
+  id TEXT NOT NULL,
   account_id TEXT NOT NULL REFERENCES accounts(id),
   user_id TEXT NOT NULL REFERENCES users(id),
   provider TEXT NOT NULL, model TEXT,
-  status TEXT NOT NULL CHECK(status IN ('pending','completed','failed','cancelled')),
+  status TEXT NOT NULL CHECK(status = 'pending' OR status = 'completed' OR status = 'failed' OR status = 'cancelled'),
   error_code TEXT, upstream_request_id TEXT,
   image_count INTEGER NOT NULL DEFAULT 0, input_bytes INTEGER NOT NULL DEFAULT 0, proposal_count INTEGER,
-  started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, finished_at TEXT
-);  -- metadata only: never message text, images, replies or tokens
+  started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, finished_at TEXT,
+  PRIMARY KEY(account_id, id)
+);
 CREATE INDEX IF NOT EXISTS ai_requests_by_user_time ON ai_requests(user_id, started_at);
 ```
 
 Notes:
 
-- **Durable Object storage** (no SQL; in `apps/api` `wrangler` config): `durable_objects.bindings: [{ name: "CHATGPT_VAULT", class_name: "ChatGPTVault" }]`, `migrations: [{ tag: "chatgpt-vault-v1", new_sqlite_classes: ["ChatGPTVault"] }]`. This is a new class in a different Worker from the existing `SaldoAI`, so there is no conflict. Pairing records and their one-time private keys exist only in the DO, never in D1.
-- **Retention:** `ai_requests` keeps 90 days by default (§11 Q11). `audit_events` is retained with the account.
+- **No secrets.** `provider_connections` holds identifiers and status only. `ai_requests` holds metadata only: never message text, images, replies or tokens. The ID is the client's `requestId`, unique per account like `reviews`.
+- **Test registration.** Add both tables to `deleteOrder` in `apps/api/tests/support/d1.ts`, ahead of `users` and `accounts`, and extend `tests/schema.test.ts` with isolation and uniqueness cases.
+- **Durable Object storage** is not D1. `ChatGPTVault` uses the DO's own SQLite-backed storage (§8.4). Pairing records and one-time private keys exist only there.
+- **Retention:** `ai_requests` keeps 90 days by default (§11 Q11), deleted by the keep-alive Cron run. `audit_events` lives as long as the account.
 
 ---
 
-## 8. Services and repositories (`apps/api`)
+## 8. Services, repositories and configuration
 
-Layering rules:
+Follow the layering in AGENTS.md:
 
-- Handlers call services only.
-- Services call repositories and gateways.
-- **Each repository function runs exactly one SQL statement.** Multi-statement atomicity uses `db.batch()` assembled in the service from repository-built statements; repositories expose `…Statement()` builders for this.
-- Gateways wrap external systems and the DO.
+- Handlers call one service method and never touch repositories or infrastructure.
+- Services receive every dependency through their constructor (ports in `src/services/ports.ts`), compose repositories and own `db.batch`.
+- Each SQL statement is its own exported repository function, registered in `src/repositories/index.ts`.
+- Adapters in `src/infrastructure/*` implement ports.
+- `src/worker.ts` is the only module that reads `Env`.
 
-| Layer    | Module                                                                                  | Responsibilities                                                                                                                         |
-| -------- | --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| HTTP     | `http/plugins/actor.ts`                                                                 | Read forwarded JWT → `IdentityService.resolveActor` → `ctx.actor`; map auth errors to 401/403                                            |
-| HTTP     | `http/routes/{me,session,ai-status,chatgpt-connection,chat,health}.ts`                  | Parse/validate input (zod/Elysia schema), call one service method, shape the strict DTO                                                  |
-| Service  | `services/identity-service.ts`                                                          | `resolveActor`, `describe`; owner bootstrap/relink batch; status and `sessions_valid_after` checks                                       |
-| Service  | `services/session-service.ts`                                                           | `signOut`                                                                                                                                |
-| Service  | `services/chatgpt-connection-service.ts`                                                | `begin`, `complete` (hosted), `cancel`, `disconnect`, `describe`, `models`, `setModel`, `ackWelcome`; state transitions; audit           |
-| Service  | `services/chatgpt-pairing-service.ts`                                                   | `create`, `status`, `complete`, `cancel` (paired); rate limits; D1 mirror and audit after the vault completes                            |
-| Service  | `services/chatgpt-keepalive-service.ts`                                                 | Weekly Cron handler for paired connections (§6.6)                                                                                        |
-| Service  | `services/ai-provider-registry.ts`                                                      | Choose ChatGPT or Disabled; `availability`                                                                                               |
-| Service  | `services/chat-service.ts` (Phase 2)                                                    | Idempotency, attachment loading, context minimization, provider call, proposal re-validation, error→state mapping                        |
-| Gateway  | `infrastructure/access/jwt-verifier.ts` (from `packages/access-auth`)                   | JWKS cache, verification                                                                                                                 |
-| Gateway  | `infrastructure/access/identity-client.ts` (optional)                                   | `get-identity` for display name                                                                                                          |
-| Gateway  | `infrastructure/chatgpt/discovery.ts`, `oauth-client.ts`, `id-token.ts`                 | Discovery, authorize URL, code exchange, refresh, revoke, ID-token verify                                                                |
-| Gateway  | `infrastructure/chatgpt/responses-client.ts`, `sse.ts`                                  | Model catalog, Responses request, completed-only SSE parse, error extraction                                                             |
-| Gateway  | `infrastructure/chatgpt/vault-gateway.ts` + `vault.do.ts`                               | DO stub wrapper; DO class (sealed storage, tx, pairings with one-time keys and expiry alarm, serialized refresh)                         |
-| Gateway  | `infrastructure/chatgpt/pairing-crypto.ts` (shared with the helper via a small package) | HPKE seal/open, code and blob encoding                                                                                                   |
-| Tool     | `tools/saldo-connect`                                                                   | Stateless local helper (§6.12), published to npm as `@reidond/saldo-connect` (CLI command `saldo-connect`) with provenance; not deployed |
-| Gateway  | `infrastructure/r2/attachments.ts`                                                      | Owned attachment reads                                                                                                                   |
-| Provider | `ai/chatgpt-plan-provider.ts`, `ai/disabled-provider.ts`                                | `AiProvider` implementations                                                                                                             |
+### 8.1 `apps/api`
 
-Repositories (one statement each):
+| Layer          | Module                                         | Status                                                  | Responsibilities                                                                                                                                                                                                                                                                                                                   |
+| -------------- | ---------------------------------------------- | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| HTTP           | `src/http/context.ts` (`ownerApp`, `actorApp`) | Exists (#4)                                             | Verified owner and actor for every route                                                                                                                                                                                                                                                                                           |
+| HTTP           | `src/http/routes/session.ts`                   | **New** (1.5)                                           | `POST /api/session/sign-out`                                                                                                                                                                                                                                                                                                       |
+| HTTP           | `src/http/routes/ai.ts`                        | **New** (2.4a, 2.7)                                     | `/api/ai/status`, `/api/ai/chatgpt/*` (§6.10)                                                                                                                                                                                                                                                                                      |
+| HTTP           | `src/http/routes/chat.ts`                      | Exists; changed (2.6)                                   | `requestId`, error `code`                                                                                                                                                                                                                                                                                                          |
+| HTTP           | `src/http/errors.ts`                           | Exists; extended                                        | Maps `AiError(code)` and pairing errors                                                                                                                                                                                                                                                                                            |
+| Service        | `IdentityService`                              | Exists (#4); + `signOut` (1.5)                          | Authentication, actor, sign-out                                                                                                                                                                                                                                                                                                    |
+| Service        | `ChatService`                                  | Exists (#4); changed (2.6)                              | Idempotency (`ai_requests`), context minimization, `validateReview` before returning, error → connection state                                                                                                                                                                                                                     |
+| Service        | `ChatGPTConnectionService`                     | **New** (2.4a, 2.4d, 2.7)                               | `describe`, `disconnect`, `models`, `setModel`, `acknowledgeWelcome`; hosted `begin`/`complete`; state transitions; audit                                                                                                                                                                                                          |
+| Service        | `ChatGPTPairingService`                        | **New** (2.4a)                                          | `create`, `status`, `complete`, `cancel`; rate limits; D1 mirror and audit after the vault completes                                                                                                                                                                                                                               |
+| Service        | `ChatGPTKeepAliveService`                      | **New** (2.8)                                           | Weekly Cron run: refresh paired connections idle for more than 6 days; delete expired `ai_requests`                                                                                                                                                                                                                                |
+| Port           | `AiProvider`                                   | Exists; changed                                         | `status(actor)` → `AiAvailability`, `extract(actor, …)` (§6.9)                                                                                                                                                                                                                                                                     |
+| Port           | `ChatGPTVault`                                 | **New**                                                 | `createPairing`, `pairingStatus`, `completePairing`, `cancelPairing`, `beginAuthorization`, `completeAuthorization`, `getAccessToken`, `revokeAndClear`, `status`. Never returns refresh or ID tokens.                                                                                                                             |
+| Infrastructure | `src/infrastructure/access-verifier.ts`        | Exists; + `type: "app"` (1.10)                          | jose verification                                                                                                                                                                                                                                                                                                                  |
+| Infrastructure | `src/infrastructure/chatgpt/vault.ts`          | **New** (2.2)                                           | `ChatGPTVault` DO class plus a gateway implementing the port over the namespace; sealing from `apps/bridge/crypto.ts`; pairing keys with an expiry alarm                                                                                                                                                                           |
+| Infrastructure | `src/infrastructure/chatgpt/oauth.ts`          | **New** (2.3)                                           | Discovery, ID-token verification, refresh, revoke; hosted code exchange                                                                                                                                                                                                                                                            |
+| Infrastructure | `src/infrastructure/chatgpt/responses.ts`      | **New** (2.5)                                           | Model catalog, Responses request, completed-only SSE, error extraction                                                                                                                                                                                                                                                             |
+| Infrastructure | `src/infrastructure/chatgpt/plan-provider.ts`  | **New** (2.5)                                           | `AiProvider` implementation                                                                                                                                                                                                                                                                                                        |
+| Infrastructure | `src/infrastructure/ai/bridge-provider.ts`     | Exists                                                  | **Deleted** in 2.8                                                                                                                                                                                                                                                                                                                 |
+| Repository     | `src/repositories/users.ts`                    | Exists; + `updateUserSessionsValidAfterStatement` (1.5) |                                                                                                                                                                                                                                                                                                                                    |
+| Repository     | `src/repositories/provider-connections.ts`     | **New** (2.1)                                           | `findProviderConnection`, `insertProviderConnectionStatement`, `updateConnectionStateStatement`, `updateConnectionGrantStatement`, `updateConnectionCapabilitiesStatement`, `updateConnectionModelStatement`, `updateConnectionWelcomeAckStatement`, `updateConnectionDisconnectedStatement`, `listPairedConnectionsDueForRefresh` |
+| Repository     | `src/repositories/ai-requests.ts`              | **New** (2.1)                                           | `insertAiRequestStatement`, `findAiRequest`, `finishAiRequestStatement`, `deleteAiRequestsBeforeStatement`                                                                                                                                                                                                                         |
+| Composition    | `src/worker.ts`                                | Exists; changed                                         | `Env` gains `CHATGPT_VAULT`, `CHATGPT_VAULT_KEY`, `CHATGPT_VAULT_KEY_PREVIOUS?` and `CHATGPT_CONNECT_MODE`. It exports the `ChatGPTVault` class and adds a `scheduled` handler that builds a scope and calls `ChatGPTKeepAliveService.run()`.                                                                                      |
 
-- `accounts.ts`: `ensureAccountStatement`.
-- `users.ts`:
-  - `findUserById`
-  - `findOwnerUserByAccount`
-  - `insertUserStatement`
-  - `updateUserSessionsValidAfter`
-  - `updateUserProfile`
-- `user-identities.ts`:
-  - `findIdentityByIssuerSubject`
-  - `insertIdentityStatement`
-  - `touchIdentityLastSeen`
-- `audit-events.ts`: `insertAuditEventStatement`.
-- `provider-connections.ts`:
-  - `findProviderConnection`
-  - `insertProviderConnection`
-  - `updateConnectionState`
-  - `updateConnectionGrant`
-  - `updateConnectionCapabilities`
-  - `updateConnectionModel`
-  - `updateConnectionWelcomeAck`
-  - `updateConnectionDisconnected`
-- `ai-requests.ts`:
-  - `insertAiRequest`
-  - `findAiRequest`
-  - `finishAiRequest`
-  - `deleteAiRequestsBefore` (retention)
+Tests follow the existing split:
 
-`apps/web` modules:
+- Handler tests use fake services (`tests/http/*`).
+- Service tests use the fakes in `tests/support/fakes.ts`, extended with the new ports and repositories.
+- Repository tests run against the local D1.
+- The vault, OAuth, Responses and pairing-crypto tests port `apps/bridge/siwc.test.ts` with synthetic keys and streams.
+- `tests/architecture.test.ts` covers the new files automatically.
 
-- `server/access.ts`: verify the JWT and expose `getVerifiedAssertion()`.
-- `server/api-client.ts`: the only binding caller. It adds the JWT and request ID and parses DTOs with the shared schemas.
-- UI components: `AccountMenu`, `AccountCard`, `ChatGPTConnectionCard` (all states), `PlanWelcomeModal`, `UsageLimitNotice`, `UsingPlanBadge`, `SessionExpiredBanner`.
+### 8.2 `apps/web`
 
-Configuration:
+| Module                                                            | Status                            | Change                                                                                      |
+| ----------------------------------------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------- |
+| `src/server/api/client.ts`, `binding.ts`, `synthetic.ts`          | Exist (#5)                        | New `ApiClient` methods and schemas (§6.10); synthetic AI states                            |
+| `src/server/actions.ts`                                           | Exists (#5)                       | New actions (§6.10)                                                                         |
+| `src/server/gate.ts` + `src/server/routes/connect.ts`             | Gate exists; route **new** (2.4c) | Helper preflight and upload route                                                           |
+| `src/app/pages/settings.tsx`                                      | Exists (#5)                       | State-driven ChatGPT card (§6.1); the sign-out form (1.5)                                   |
+| `src/app/client/chatgpt-connect.tsx`                              | **New** (2.4a)                    | Pairing sheet: command with exact helper version, countdown, Copy/Share, polling, paste box |
+| `src/app/client/plan-welcome-modal.tsx`, `usage-limit-notice.tsx` | **New** (2.7)                     | Welcome modal and usage-limit modal or compact notice                                       |
+| `src/app/client/chat.tsx`                                         | Exists (#5)                       | "Using ChatGPT plan · Manage usage" badge; error codes; `requestId` per send                |
+| `src/app/shell/app-shell.tsx`, `src/app/client/account-menu.tsx`  | Exist (#5)                        | Sign-out link → form (1.5)                                                                  |
 
-| Worker     | Bindings                                                         | Vars                                                                                                                                                                                              | Secrets                                                                                                               |
-| ---------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `apps/web` | `API` (service → `saldo-api`), assets                            | `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`, `APP_ORIGIN`                                                                                                                                                  | none                                                                                                                  |
-| `apps/api` | `DB`, `FILES`, `CHATGPT_VAULT`, Cron Trigger (weekly keep-alive) | `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`, `APP_ORIGIN`, `CHATGPT_CONNECT_MODE` (`paired_local` interim default, `hosted`, `disabled`), `CHATGPT_CLIENT_ID`?, `CHATGPT_REDIRECT_URI`?, `CHATGPT_SCOPES`? | `OWNER_SUB`, `CHATGPT_VAULT_KEY`, `CHATGPT_VAULT_KEY_PREVIOUS`?, `CHATGPT_CLIENT_SECRET`? (hosted, confidential only) |
+Follow the frontend rules in AGENTS.md: server components by default; small `"use client"` islands; actions passed as props; the design tokens; explicit empty, loading, error and AI-unavailable states.
 
-**There is never an `OPENAI_API_KEY`, `AI_BRIDGE_SECRET` or other-provider key.** The CI deploy keeps `--keep-vars` and secret-preservation semantics (see `docs/GITHUB-DEPLOYMENT.md`).
+### 8.3 Packages
+
+| Package                                                                             | Status         | Contents                                                                                                                                                                                    |
+| ----------------------------------------------------------------------------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `packages/domain` (`@saldo/domain`)                                                 | Exists         | **Adds** the `connectionStateSchema` and `aiAvailabilitySchema` zod schemas. Stays free of Worker and Node APIs.                                                                            |
+| `packages/pairing` (`@saldo/pairing`)                                               | **New** (2.4a) | Pairing-code and sealed-blob encoding, plus HPKE seal and open over Web Crypto (X25519, HKDF, AES-GCM). Used by `apps/api` and the helper.                                                  |
+| `packages/connect` (published as `@reidond/saldo-connect`, command `saldo-connect`) | **New** (2.4b) | The stateless helper (§6.12). Bundled with `vp pack` so `@saldo/pairing` is inlined; `files` allowlist; `engines.node >= 24`. The root script `pnpm saldo-connect` runs it from a checkout. |
+
+### 8.4 Configuration and deployment with `cf`
+
+| Worker                                                 | Bindings today (#8)                                                                                                               | Phase 2 changes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `saldo-web` (`apps/web/cloudflare.config.ts`)          | `ASSETS`, `API` → `saldo-api`, `APP_ORIGIN`, `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`; no secrets                                       | None in paired mode                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| `saldo-api` (`apps/api/cloudflare.config.ts`)          | `APP_ORIGIN`, `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`, `OWNER_SUB`, `DB`, `FILES`, `AI` → `saldo-ai-bridge`; secret `AI_BRIDGE_SECRET` | Adds the binding `CHATGPT_VAULT: bindings.durableObject({ worker: "saldo-api", exportName: "ChatGPTVault" })` and the export `ChatGPTVault: exports.durableObject({ storage: "sqlite" })`. Adds `CHATGPT_CONNECT_MODE: bindings.text("paired_local")`, a reviewed constant. Adds `triggers: [triggers.scheduled({ schedule: "17 3 * * 1" })]`, a place the config's existing comment already reserves. Adds secrets `CHATGPT_VAULT_KEY` and optional `CHATGPT_VAULT_KEY_PREVIOUS`. Removes `AI` and `AI_BRIDGE_SECRET` in 2.8. |
+| `saldo-ai-bridge` (`apps/bridge/cloudflare.config.ts`) | `SALDO_AI` DO with Container `saldo-ai-bridge-saldoai`                                                                            | Dropped from builds and deploys in 2.8; teardown is owner-approved                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+
+Consequences of the current `cf` pipeline and its gaps ([DEPLOYMENT.md](../DEPLOYMENT.md#gaps-what-cf-cannot-do-yet)):
+
+- **Release checks must approve the new shape (task 2.0).** `validateBuildOutput` in `scripts/ci/deployment.ts` throws on any `worker.triggers` ("declares routes or domains") and on any `exports` for components other than the bridge. Phase 2 must approve, for `saldo-api` only:
+  - exactly `{ ChatGPTVault: { type: "durable-object", storage: "sqlite" } }`;
+  - exactly one scheduled trigger;
+  - the new bindings in `expectedBindings`.
+
+  Routes, domains and every other trigger type stay forbidden. Update `tests/deployment.test.ts` alongside.
+
+- **Durable Object lifecycle.** As with the bridge, `saldo-api` must never roll back to a version older than the one that introduced `ChatGPTVault`. Add that to the rollback section of DEPLOYMENT.md. `cf migrate` does not convert DO migrations, which does not matter here: the new class is declared directly with `exports.durableObject`.
+- **Secrets have no single-value command.** The owner sets `CHATGPT_VAULT_KEY` with `cf workers secrets bulk --worker saldo-api --file <owner-only JSON>`, never `--text`. `cf` keeps it across deploys, and the `verify` step treats it as a pre-existing secret that must survive.
+- **No `keep_vars`.** A deploy drops vars it does not declare, so `CHATGPT_CONNECT_MODE` is a constant in `cloudflare.config.ts`, changed only by a reviewed PR. Hosted mode's client ID and redirect URI become release settings (`SALDO_CHATGPT_CLIENT_ID`, `SALDO_CHATGPT_REDIRECT_URI`) from the protected Environment, checked against the live Worker like the Access settings.
+- **No live logs.** For incidents, the owner runs `npx wrangler@4.149.0 tail saldo-api`. That shows `console` output, so the logging policy (§9.5) also protects tail sessions.
+- **Smoke checks.** `verify` also checks that `saldo-api` has the `ChatGPTVault` namespace and the one Cron trigger. A Cron trigger adds no public entry point.
 
 ---
 
@@ -1046,7 +1077,7 @@ Configuration:
 | Anonymous or other-identity access to data, assets or API                                       | Owner-only Access policy on all paths. Both Workers verify the signed JWT (signature, `iss`, `aud`, `exp`, non-empty `sub`, `type=app`). Owner-only actor check. Every query scoped by `account_id`. API has no public route. Smoke tests confirm unauthenticated 302/401, a wrong-owner 403, and no `workers.dev` or preview endpoints.                                                                                                        |
 | Forged identity headers (`Cf-Access-Authenticated-User-Email`, unsigned JWT, service-token JWT) | Ignored or rejected. Only verified claims are used. Empty `sub` is rejected.                                                                                                                                                                                                                                                                                                                                                                    |
 | Stolen or replayed Access cookie or JWT                                                         | HttpOnly, SameSite Lax, daily app session, `sessions_valid_after` on sign-out, admin revoke in Access. JWTs are never logged or forwarded beyond the API. Binding Cookie stays off because it is incompatible with the `cloudflared` upload (§2.2).                                                                                                                                                                                             |
-| Unauthorized caller over the service binding                                                    | Only `apps/web` declares the binding, and the API re-verifies the JWT. A deploy-time check lists the API's routes (must be none).                                                                                                                                                                                                                                                                                                               |
+| Unauthorized caller over the service binding                                                    | Only `saldo-web` declares the `API` binding, and `saldo-api` re-verifies the JWT. #8's release checks refuse routes and domains on `saldo-api`, and its smoke checks prove the workers.dev URL gives 404.                                                                                                                                                                                                                                       |
 | OAuth CSRF, code injection, account mix-up                                                      | POST start + Origin check. State, nonce and PKCE S256. Tx bound to the browser cookie, Access user and vault, single-use, 10-minute expiry. Exact redirect URI. Callback `client_id` and ID-token `sub` must match on reconnect. Code exchange happens only server-side.                                                                                                                                                                        |
 | Open redirect via callback                                                                      | Redirects go only to fixed internal paths; no `return_to` parameter.                                                                                                                                                                                                                                                                                                                                                                            |
 | Token exposure in browser, RSC payloads, URLs, logs, audit                                      | Tokens exist only in the DO (sealed) and transiently in API memory. DTO schemas are strict with a forbidden-field test. No `id_token_hint`. No tokens in URLs. Logging is allow-listed (route, status, duration, request ID, error code). Audit `summary` is zod-allow-listed. `observability` stays off (or on with head-sampling and no request bodies) for both Workers. A built-bundle scan for secret names and token patterns runs in CI. |
@@ -1064,8 +1095,8 @@ Configuration:
 | Compromise of the computer running the helper                                                   | Tokens exist only in helper memory for seconds. Only the non-secret host ID and registration file are persisted. `cloudflared`'s Access token on disk expires with the Access session. If compromise is suspected, disconnect Saldo in ChatGPT settings and revoke the Access session.                                                                                                                                                          |
 | Supply-chain attack on the published helper (npm)                                               | Publish only from GitHub Actions via npm trusted publishing (OIDC, no stored token) with provenance. Settings shows an exact version, never `latest`. Minimal dependencies with a lockfile. `files` allowlist. The owner's npm account uses 2FA. `npm audit signatures` is documented.                                                                                                                                                          |
 | Upload route accepting requests without `Origin`                                                | Only on `/connect/pairings/{id}`. It requires both an Access identity and the pairing secret, and caps the body at 32 KB. Other origins are rejected.                                                                                                                                                                                                                                                                                           |
-| Provider-policy risk of the interim pattern (U4)                                                | Documented OpenAI procedure only; disclosed in Settings; OpenAI is asked in parallel. `CHATGPT_CONNECT_MODE=disabled` switches it off without a deploy of new code.                                                                                                                                                                                                                                                                             |
-| XSS that could read or ride the session                                                         | Existing CSP (`script-src 'self'`, `frame-ancestors 'none'`). Model output rendered as text or sanitized Markdown, never HTML. HttpOnly cookies.                                                                                                                                                                                                                                                                                                |
+| Provider-policy risk of the interim pattern (U4)                                                | Documented OpenAI procedure only; disclosed in Settings; OpenAI is asked in parallel. To stop it at once, **Disconnect** in Saldo or disconnect Saldo in ChatGPT settings. To switch it off for good, merge a reviewed PR setting `CHATGPT_CONNECT_MODE` to `disabled` (a var change needs a release, because `cf` has no `keep_vars`).                                                                                                         |
+| XSS that could read or ride the session                                                         | The web's nonce-based CSP (`script-src 'self' 'nonce-…'`, `frame-ancestors 'none'`; `src/server/http.ts`, #5). Model output rendered as text or sanitized Markdown, never HTML. HttpOnly cookies.                                                                                                                                                                                                                                               |
 | Clickjacking on Connect or Disconnect                                                           | `frame-ancestors 'none'`.                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | Supply chain                                                                                    | Pinned lockfile. `jose` for JWT. No new runtime dependencies beyond what the monorepo already uses.                                                                                                                                                                                                                                                                                                                                             |
 
@@ -1082,7 +1113,7 @@ Configuration:
 ### 9.4 No secrets in chat or support
 
 - The UI never asks the owner to paste keys or tokens.
-- Setup docs keep using owner-run `wrangler secret put` commands.
+- Setup docs keep using owner-run `cf workers secrets bulk --file <owner-only JSON>` commands (DEPLOYMENT.md), never `--text`.
 - Error messages show only OpenAI request IDs.
 
 ### 9.5 Logging policy
@@ -1095,7 +1126,7 @@ Configuration:
 1. **Everything it does is Worker-native.** Inference is HTTPS plus SSE parsing. Workers can stream `fetch` responses with no wall-clock limit while the client is connected, and SSE parsing of at most 2 MB fits easily in the CPU budget. The container ran Node only because the earlier design copied the open-source "VM" model. Codex app-server (the one integration that truly needs a process) is not used.
 2. **Its isolation benefit is kept without it.** The container never saw refresh tokens. The `ChatGPTVault` DO preserves that property: the inference path receives only short-lived access tokens.
 3. **Less surface and cost.** Removing it eliminates a Docker build in CI, Container billing and cold starts, a single 256 MiB instance with a one-request mutex, a shared `AI_BRIDGE_SECRET`, chunked-secret transfer, and a second Worker to protect.
-4. **The hosted flow needs a public HTTPS callback**, which belongs in `apps/web` → `apps/api`, not in a private bridge.
+4. **The hosted flow needs a public HTTPS callback**, which belongs in `saldo-web` → `saldo-api`, not in a private bridge.
 5. **It is not a requirement.** The spec appendix calls the bridge implementation history, not a requirement.
 
 The interim paired connect (§6.12) needs only a short-lived local helper on the owner's computer, not a hosted container.
@@ -1117,49 +1148,52 @@ The interim paired connect (§6.12) needs only a short-lived local helper on the
 
 ## 10. Phased tasks and acceptance criteria
 
-These align with spec §13 phases 0–2. Each task becomes one or more PRs in the stack after the restructure layers land.
+These align with spec §13 phases 0–2. Done tasks name the stack PR that delivered them. Each open task becomes one or more PRs stacked on top of #8.
 
 ### Phase 0 — Resolve the hosted AI dependency (owner + docs)
 
-| #   | Task                                                                                                                                                                                  | Acceptance criteria                                                                                                                             |
-| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| 0.1 | Owner reviews this plan and answers §11.                                                                                                                                              | Decisions recorded in the PR or the spec's open decisions.                                                                                      |
-| 0.2 | **Owner** submits the interest form (_Sign in and ChatGPT plan use for AI requests_), describing Saldo as an owner-only MIT open-source app at `saldo.sands.red`, asking about U1–U7. | Submission or response tracked privately. **No assistant submits it.**                                                                          |
-| 0.3 | If approved: record the client type, exact callback, scopes and host-ID requirement. Update `docs/SIWC.md` (replace the bridge setup with hosted setup) and this plan's §6.3.         | Every U-item is marked confirmed or still unknown, with a source. Nothing in code depends on an unconfirmed value except through `unavailable`. |
-| 0.4 | **Decided 2026-10-08:** the interim path is the paired local connect (§6.12). The owner made the new product decision required by spec §13, and the spec now records it.              | Spec §3, §7, §13 and §15 updated (this PR). Revisit when OpenAI answers U1 and U4.                                                              |
+| #   | Task                                                                                                                                                                                     | Acceptance criteria                                                    | Status                                                      |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- | ----------------------------------------------------------- |
+| 0.1 | Owner reviews this plan and answers §11.                                                                                                                                                 | Decisions recorded in the PR or the spec's open decisions.             | Partly done: Q2, Q6, Q9, Q13 and Q14 are decided.           |
+| 0.2 | **Owner** submits the interest form (_Sign in and ChatGPT plan use for AI requests_), describing Saldo as an owner-only MIT open-source app at `saldo.sands.red` and asking about U1–U7. | Submission or response tracked privately. **No assistant submits it.** | Open                                                        |
+| 0.3 | If approved: record the client type, exact callback, scopes and host-ID requirement. Update `docs/SIWC.md` and §6.3.                                                                     | Every U-item marked confirmed or unknown, with a source.               | Open                                                        |
+| 0.4 | Choose the interim path.                                                                                                                                                                 | Spec §3, §4, §7, §12, §13 and §15 updated.                             | **Done** (owner, 2026-10-08): paired local connect (§6.12). |
 
 ### Phase 1 — Identity, sign-out, provider boundary (no AI needed)
 
-| #   | Task                                                                                                                                                                                                                                                                 | Acceptance criteria                                                                                                                                                                                                       |
-| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1.1 | `packages/access-auth` verifier, with tests for: valid; bad signature; unknown `kid` → refetch; wrong `iss`; wrong `aud`; expired; `nbf` in the future; missing or empty `sub`; service-token JWT; `alg` other than RS256; header absent; email-header-only request. | All negative cases rejected. JWKS are fetched from the team domain only.                                                                                                                                                  |
-| 1.2 | Identity migration (users, user_identities, audit_events) plus repositories, one statement each.                                                                                                                                                                     | Migration is additive. Existing `accounts` and `subscriptions` are untouched. `db.batch` provisioning is atomic.                                                                                                          |
-| 1.3 | `IdentityService` + Elysia actor plugin on **every** route.                                                                                                                                                                                                          | Owner is provisioned on first request and existing data is visible. A non-owner verified `sub` gets 403. Disabled user gets 403. `iat <= sessions_valid_after` gets 401. A relink after an `OWNER_SUB` change is audited. |
-| 1.4 | `apps/web` verifies the JWT on every request (including assets via `run_worker_first`) and forwards it. The API client never forwards cookies.                                                                                                                       | Integration test: web without a JWT gets 401 and no binding call. With a JWT, the API sees the same assertion. An API call with no or a forged JWT gets 401.                                                              |
-| 1.5 | Sign-out (§5.2) and session-expired handling.                                                                                                                                                                                                                        | After sign-out, a replayed old JWT gets 401 immediately on web and API. The browser lands on Access logout. Verified in Chrome, Safari and Firefox mobile, with `form-action` adjusted only if needed.                    |
-| 1.6 | Account menu, Account card, 401/403 pages.                                                                                                                                                                                                                           | The UI shows the verified email or name and the "Cloudflare Access" source. Copy never implies AI is enabled.                                                                                                             |
-| 1.7 | `packages/domain` AI boundary + `DisabledProvider` + `GET /v1/ai/status` + ChatGPT card in the `unavailable` state.                                                                                                                                                  | With no ChatGPT config, the card shows Unavailable. Manual CRUD, import, review and export all pass with AI disabled. A module-boundary test proves the CRUD services do not import AI code.                              |
-| 1.8 | Deploy hardening: API with no routes, `workers_dev:false`, `preview_urls:false`; smoke tests.                                                                                                                                                                        | CI smoke: anonymous web gets an Access redirect/401; API not publicly resolvable; the deployed bundle contains no secret names. Recorded in `docs/VERIFICATION.md`.                                                       |
-| 1.9 | Leave the bridge untouched (still deployed, unused by new code).                                                                                                                                                                                                     | No change to `apps/bridge` behavior.                                                                                                                                                                                      |
+| #    | Task                                                                                                                                                                                                          | Acceptance criteria                                                                                                                                                                     | Status                                                    |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| 1.1  | Access JWT verifiers in both Workers, with negative tests (bad signature, wrong `iss`, `aud`, `alg`, expired, missing or empty `sub`, service token, header absent, identity headers ignored).                | All negative cases rejected; JWKS only from the team domain.                                                                                                                            | **Done** (#4 API, #5 web)                                 |
+| 1.2  | Identity migration and repositories, one statement each.                                                                                                                                                      | Additive; existing rows untouched; atomic provisioning batch.                                                                                                                           | **Done** (#4, `0002_identity.sql`)                        |
+| 1.3  | `IdentityService` plus guards on every route.                                                                                                                                                                 | Owner provisioned on first request; non-owner refused; disabled user 403; `iat <= sessions_valid_after` 401; relink audited.                                                            | **Done** (#4)                                             |
+| 1.4  | Web verifies on every request (assets included) and forwards the JWT; never forwards cookies.                                                                                                                 | Covered by `apps/web/tests/server.test.ts` and the API contract tests.                                                                                                                  | **Done** (#5)                                             |
+| 1.5  | **Sign-out that also ends the Saldo session:** `POST /api/session/sign-out`, `IdentityService.signOut`, `updateUserSessionsValidAfterStatement`, `ApiClient.signOut`, `signOut` action, links → forms (§5.2). | After sign-out, a replayed old JWT gets 401 at once on the API. The browser lands on the Access logout. Contract test and README updated. Checked in Chrome, Safari and Firefox mobile. | Open                                                      |
+| 1.6  | Account menu, Account card, 401 and 403 pages.                                                                                                                                                                | UI shows the verified email or name and "Cloudflare Access"; copy never implies AI is enabled.                                                                                          | **Done** (#5); the sign-out form is in 1.5                |
+| 1.7  | AI boundary with a disabled provider and an honest ChatGPT card.                                                                                                                                              | Manual CRUD, import, review and export work with AI disabled; the architecture test enforces that only `ChatService` uses `AiProvider`.                                                 | **Done** (#4, #5). `/api/ai/status` moves to 2.7.         |
+| 1.8  | Deploy hardening: API with no routes, `workersDev: false`, `previewUrls: false`, smoke checks.                                                                                                                | Anonymous requests get the Access redirect or 401; workers.dev URLs give 404; no secret values in Build Output.                                                                         | **Done** (#7, #8)                                         |
+| 1.9  | Leave the bridge running and unused by new code.                                                                                                                                                              | `apps/bridge` behavior unchanged.                                                                                                                                                       | **Done** (moved to `cf` in #7, deployed separately in #8) |
+| 1.10 | API verifier parity: require `type: "app"` and add `clockTolerance: 5` in `createAccessTokenVerifier`.                                                                                                        | `apps/api/tests/infrastructure/access-verifier.test.ts` covers an `org`-type token and skew.                                                                                            | Open                                                      |
+| 1.11 | Edge-expired Access session during RSC navigation and server actions (§5.2).                                                                                                                                  | An expired session shows "Your session expired. Reload to sign in again." with the draft kept; no blank page or raw redirect HTML.                                                      | Open                                                      |
 
 ### Phase 2 — ChatGPT connection, chat and screenshot entry
 
-The paired-mode tasks (2.4a–2.4c) need no OpenAI approval and deliver live AI. Hosted OAuth (2.4d) stays gated on Phase 0. Tasks 2.6–2.8 can ship against a fake provider first.
+The paired-mode tasks (2.4a–2.4c) need no OpenAI approval and deliver live AI. Hosted OAuth (2.4d) stays gated on Phase 0.
 
-| #    | Task                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       | Acceptance criteria                                                                                                                                                                                                                                                                                                                                                                                                |
-| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 2.1  | AI-connections migration (`provider_connections`, `ai_requests`) plus repositories.                                                                                                                                                                                                                                                                                                                                                                                                                                                        | Additive. No secret columns. A test greps the schema for token-like column names.                                                                                                                                                                                                                                                                                                                                  |
-| 2.2  | `ChatGPTVault` DO: sealed storage (kid, AAD); hosted tx lifecycle; **pairings** (one-time X25519 keys, hashed secrets, expiry alarm, consume-before-open); serialized refresh with the §6.6 policy; revoke-and-clear. Port the tests from `bridge/siwc.test.ts`.                                                                                                                                                                                                                                                                           | Concurrent `getAccessToken` calls trigger exactly one refresh. A crash mid-refresh leads to one retry with the same token, then `reconnect_required` on a reuse error. A tx or pairing can be consumed once. The private key is gone after consume or expiry. Wrong key or AAD fails closed. No method returns refresh or ID tokens.                                                                               |
-| 2.3  | OAuth gateway shared by both modes: discovery, ID-token verification, refresh, revoke. Hosted-only parts: authorize URL and code exchange (public or confidential).                                                                                                                                                                                                                                                                                                                                                                        | Tests: exact `redirect_uri`; state, nonce and PKCE mismatches rejected; `invalid_grant`; missing plan scope gives `plan_permission_missing`; differing `client_id` or `sub` on reconnect rejected; secret only in the Basic header; revocation 200 and 5xx-then-unconfirmed.                                                                                                                                       |
-| 2.4a | **Pairing core and paste fallback.** Pairing service and endpoints, Settings pairing sheet (command with exact helper version, countdown, Copy/Share, paste box, polling), `pairing-crypto` (HPKE).                                                                                                                                                                                                                                                                                                                                        | End-to-end with a fake OpenAI authorization server and a synthetic bundle: create, complete, Connected. Expired, reused, wrong-secret, wrong-owner and tampered blobs are rejected and the pairing is burned. The DTO test allows only `pairingCode`. Nothing secret is logged.                                                                                                                                    |
-| 2.4b | **`tools/saldo-connect` helper and npm release.** Port the loopback, ticket, Host-check, PKCE, nonce and ID-token logic from `bootstrap.ts`. Stateless for tokens. Origin pinning. Release workflow on tag `saldo-connect-v*` with npm trusted publishing and provenance. **Owner** makes sure their npm account owns the `@reidond` scope, does the first publish setup for `@reidond/saldo-connect` (public access), and configures the trusted publisher on npmjs.com.                                                                  | Unit tests: wrong, non-`https`, IP-literal and expired codes refused; `dynamic_agent_client` with `agent_name_hint=Saldo` on first run and the saved client ID on reconnect; issued client ID saved before exchange; no token bytes on disk or stdout (filesystem and stdout capture). A published version shows provenance on npm, and `npx @reidond/saldo-connect@<version> --version` works on a clean machine. |
-| 2.4c | **Upload via `cloudflared`.** `cloudflared access token` / `login` through `execFile` without a shell; `/connect/pairings/{id}` preflight and upload route; automatic paste fallback. No Access setting change.                                                                                                                                                                                                                                                                                                                            | Preflight happens before OpenAI consent. An upload without an Access identity is refused at the edge. A foreign `Origin` gets 403. The token is never printed. The Settings sheet flips to Connected without a paste. With `cloudflared` absent, the helper falls back to paste.                                                                                                                                   |
-| 2.4d | **Hosted mode** (gated on Phase 0): `ChatGPTConnectionService` begin/complete, web connect and callback, tx cookie, CSP `form-action`.                                                                                                                                                                                                                                                                                                                                                                                                     | End-to-end with a local fake authorization server: connect, decline, permission missing, reconnect, disconnect. Cookie flags are `__Host-`, HttpOnly, Secure, Lax, 600 s. The callback leaves no code in history.                                                                                                                                                                                                  |
-| 2.5  | Responses gateway + `ChatGPTPlanProvider`: catalog, request body (no unsupported fields), completed-only SSE, error mapping (§6.8).                                                                                                                                                                                                                                                                                                                                                                                                        | Golden tests for the body shape. A stream ending without `response.completed`, a mid-stream `response.failed` (usage limit) and a >2 MB stream yield no proposals. Each mapped code produces the specified state. No automatic retries.                                                                                                                                                                            |
-| 2.6  | `ChatService` with idempotency, R2 attachment loading, context minimization, proposal re-validation; replaces `server/siwc.ts`.                                                                                                                                                                                                                                                                                                                                                                                                            | Same `requestId` twice gives one upstream request. Attachments from another account → 404. Proposals cannot target unrelated or foreign records. Prompt-injection fixtures pass.                                                                                                                                                                                                                                   |
-| 2.7  | UI: all §6.1 states, welcome modal, "Using ChatGPT plan" badge, usage-limit modal, model picker, image capability display.                                                                                                                                                                                                                                                                                                                                                                                                                 | Visual QA on a phone and desktop for each state using a fake provider. Copy reviewed against OpenAI's UI guidelines.                                                                                                                                                                                                                                                                                               |
-| 2.8  | Remove `apps/bridge` from CI build and deploy; delete `server/siwc.ts`, `AI_BRIDGE_SECRET` and the `AI` binding from new code. Propose bridge teardown as a **separate owner-approved** session. Add the weekly keep-alive Cron for paired connections (§6.6).                                                                                                                                                                                                                                                                             | CI is green without Docker. The deployed bridge is untouched until the owner approves teardown. The keep-alive refreshes only connections idle for more than 6 days and respects `earliest_refresh_at`. A test proves a terminal refresh error moves the connection to `reconnect_required`.                                                                                                                       |
-| 2.9  | **Owner-run live acceptance** (spec §12) in paired mode, and again in hosted mode once approved: (a) start pairing from the phone and complete it on a computer, (b) text request succeeds, (c) screenshot request succeeds and image capability becomes verified, (d) reconnect through a new pairing shows no consent screen, (e) revoking in ChatGPT settings leads to `reconnect_required` on the next request, (f) Disconnect confirms revocation, (g) usage-limit UI checked only if encountered naturally (never by inducing load). | Results recorded in `docs/VERIFICATION.md`. The release is labeled "AI via interim paired connect" until the hosted flow passes the same checks.                                                                                                                                                                                                                                                                   |
+| #    | Task                                                                                                                                                                                                                                                                                                                                                                                                                                       | Acceptance criteria                                                                                                                                                                                                                                                                                                                                                     |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2.0  | **Release approvals for the new `saldo-api` shape:** in `scripts/ci/deployment.ts`, allow exactly the `ChatGPTVault` SQLite export, exactly one scheduled trigger, and the new bindings in `expectedBindings`. Update `tests/deployment.test.ts` and DEPLOYMENT.md (rollback caveat, secret setup). **Owner** sets `CHATGPT_VAULT_KEY` with `cf workers secrets bulk --worker saldo-api --file`.                                           | A Build Output with any other export, trigger type, route or domain is still refused. `verify` confirms the namespace, the trigger and that the secret survives.                                                                                                                                                                                                        |
+| 2.1  | Migration `0003_ai_connections.sql` (§7), `provider-connections.ts` and `ai-requests.ts` repositories, `deleteOrder` and schema tests.                                                                                                                                                                                                                                                                                                     | Passes `scripts/ci/migrations.ts`; no secret columns; repository tests on the local D1.                                                                                                                                                                                                                                                                                 |
+| 2.2  | `ChatGPTVault` DO (`src/infrastructure/chatgpt/vault.ts`) and its gateway: sealed storage (kid, AAD); pairings (one-time X25519 keys, hashed secrets, expiry alarm, consume-before-open); hosted transactions; serialized refresh (§6.6); revoke-and-clear.                                                                                                                                                                                | Concurrent `getAccessToken` calls trigger one refresh. A crash mid-refresh means one retry, then `reconnect_required` on a reuse error. A transaction or pairing can be consumed once. The private key is gone after consume or expiry. A wrong key or AAD fails closed. No method returns refresh or ID tokens.                                                        |
+| 2.3  | OAuth gateway (`src/infrastructure/chatgpt/oauth.ts`): discovery, ID-token verification, refresh, revoke; hosted-only code exchange. Port from `apps/bridge/auth.ts`.                                                                                                                                                                                                                                                                      | State, nonce and PKCE mismatches rejected; `invalid_grant`; missing plan scope → `plan_permission_missing`; a differing `client_id` or `sub` on reconnect rejected; revocation 200, and 5xx → unconfirmed.                                                                                                                                                              |
+| 2.4a | **Pairing core and paste fallback:** `@saldo/pairing`, `ChatGPTPairingService`, `/api/ai/chatgpt/pairings*`, `ApiClient` methods, `chatgpt-connect.tsx`, `completePairingFromPaste` action.                                                                                                                                                                                                                                                | End to end with a fake authorization server and a synthetic bundle: create → complete → Connected. Expired, reused, wrong-secret, wrong-owner and tampered blobs are rejected and burn the pairing. The DTO test allows only `pairingCode`. Nothing secret is logged.                                                                                                   |
+| 2.4b | **`packages/connect` helper and npm release:** port the loopback, ticket, Host-check, PKCE, nonce and ID-token logic from `apps/bridge/bootstrap.ts`. Stateless for tokens; origin pinning; `vp pack` bundle. Release workflow on tag `saldo-connect-v*` with npm trusted publishing and provenance. **Owner** confirms the `@reidond` npm scope and configures the trusted publisher.                                                     | Wrong, non-`https`, IP-literal and expired codes refused. First run uses `dynamic_agent_client` plus `agent_name_hint=Saldo`; reconnect uses the saved client ID. The issued client ID is saved before exchange. No token bytes on disk or stdout. A published version shows provenance, and `npx @reidond/saldo-connect@<version> --version` works on a clean machine. |
+| 2.4c | **Upload via `cloudflared`:** `execFile` without a shell for `cloudflared access token` and `login`; `src/server/routes/connect.ts` in the gate; automatic paste fallback. No Access setting change.                                                                                                                                                                                                                                       | Preflight runs before OpenAI consent. An upload without an Access identity is refused at the edge, and a foreign `Origin` gets 403. The token is never printed. The sheet flips to Connected without a paste. Without `cloudflared`, the helper falls back to paste.                                                                                                    |
+| 2.4d | **Hosted mode** (gated on Phase 0): `ChatGPTConnectionService.begin` and `complete`, the web connect and callback routes, the tx cookie, CSP `form-action` with `https://auth.openai.com`, release settings for the client.                                                                                                                                                                                                                | End to end with a fake authorization server: connect, decline, permission missing, reconnect, disconnect. Cookie flags are `__Host-`, HttpOnly, Secure, Lax and 600 s. No code is left in history.                                                                                                                                                                      |
+| 2.5  | Responses gateway and ChatGPT plan provider (§6.7, §6.8), with the `AiProvider` port change (§6.9) and the no-fallback guard test.                                                                                                                                                                                                                                                                                                         | Golden tests for the request body. A stream ending without `response.completed`, a mid-stream usage-limit `response.failed`, and a stream over 2 MB all yield no proposals. Each code maps to its state. No automatic retries.                                                                                                                                          |
+| 2.6  | `ChatService`: `requestId` idempotency, context minimization, `validateReview` before returning, `AiError` mapping. Contract and README updated (removes two known quirks).                                                                                                                                                                                                                                                                | The same `requestId` twice makes one upstream request. Proposals cannot target unrelated or foreign records. Prompt-injection fixtures pass. A network error now maps to a 503 `code`, not 400.                                                                                                                                                                         |
+| 2.7  | UI: every §6.1 state, `/api/ai/status`, the welcome modal, the "Using ChatGPT plan" badge, the usage-limit notice, the model picker, image capability, and synthetic states for each.                                                                                                                                                                                                                                                      | Visual QA on a phone and a desktop per state with `SALDO_SYNTHETIC_AI`. Copy checked against OpenAI's UI guidelines and the AGENTS.md honesty rules.                                                                                                                                                                                                                    |
+| 2.8  | Retire the bridge from the pipeline: delete `bridge-provider.ts`, the `AI` binding and `AI_BRIDGE_SECRET`; remove `apps/bridge` from builds, deploys and `expectedBindings`. Add the keep-alive `scheduled` handler and `ChatGPTKeepAliveService`. Propose bridge teardown as a **separate owner-approved** session.                                                                                                                       | CI is green without Docker. The deployed bridge is untouched until the owner approves. Keep-alive refreshes only connections idle for more than 6 days and respects `earliest_refresh_at`; a terminal refresh error → `reconnect_required`.                                                                                                                             |
+| 2.9  | **Owner-run live acceptance** (spec §12), in paired mode now and in hosted mode once approved: (a) pair from the phone and complete on a computer; (b) a text request succeeds; (c) a screenshot request succeeds and images become verified; (d) reconnecting shows no consent screen; (e) revoking in ChatGPT settings → `reconnect_required`; (f) Disconnect confirms revocation; (g) the usage-limit UI, only if it happens naturally. | Results recorded in `docs/VERIFICATION.md`. Releases are labeled "AI via interim paired connect" until the hosted flow passes the same checks.                                                                                                                                                                                                                          |
 
 ---
 
@@ -1172,11 +1206,11 @@ The paired-mode tasks (2.4a–2.4c) need no OpenAI approval and deliver live AI.
    - Session lengths: recommended app 24 hours, global 7 days.
    - MFA required? Binding Cookie stays off because the `cloudflared` upload needs it off.
 4. **Sign-out scope.** Access logout ends sessions for **all** apps behind the same Access team. Is that acceptable, or should Saldo use a separate team?
-5. **Bridge teardown.** After Phase 2 lands, may we propose deleting `saldo-ai-bridge` (Worker, Container, DO namespace and its secrets)? Nothing is removed without your explicit yes.
+5. **Bridge teardown.** After Phase 2 lands, may we propose deleting `saldo-ai-bridge` (Worker, Container application `saldo-ai-bridge-saldoai`, `SaldoAI` DO namespace and its secrets)? Nothing is removed without your explicit yes.
 6. ~~**Keep-alive.**~~ **Decided 2026-10-08:** weekly Cron refresh for paired connections (§6.6).
 7. **Model choice.** Expose a model picker, or always use the first listed model?
 8. **Image privacy.** Strip EXIF and GPS before sending images to OpenAI? This needs the Cloudflare Images binding, possibly paid, or a WASM decoder.
-9. **API exposure.** Confirm the API stays binding-only with no hostname. A future native client would need a separate Access app and a list of AUDs.
+9. ~~**API exposure.**~~ **Done in #8:** `saldo-api` is binding-only, with no hostname. A future native client would need a separate Access app and a list of AUDs.
 10. **More users.** Is the §5.6 direction acceptable: invitations, and each user connects their own ChatGPT plan, never sharing yours?
 11. **Retention.** How long to keep `ai_requests` metadata? 90 days is proposed. Is the `audit_events` retention right?
 12. **ChatGPT accounts.** One active ChatGPT connection per user (proposed), or an account picker for several workspaces (the open-source docs suggest supporting several)?
@@ -1187,6 +1221,7 @@ The paired-mode tasks (2.4a–2.4c) need no OpenAI approval and deliver live AI.
 
 ## 12. Change log
 
+- 2026-10-09: rebased on stack #6 (#1 → #3 → #4 → #5 → #7 → #8) and rewritten against the merged code. §3 lists what the stack implemented; §5 and Phase 1 are marked done with PR numbers. Open items are sign-out with `sessions_valid_after` (1.5), API `type: "app"` parity (1.10) and edge-expiry handling (1.11). Endpoints now follow the real `/api/*` contract with `{error, code}`. Services, repositories, routes, ports and web modules use the real names. The migration is rewritten for the additive grammar (`0003_ai_connections.sql`, verified with `scripts/ci/migrations.ts`). Packages are `@saldo/pairing` and `packages/connect`. Added `cf` configuration and pipeline consequences: release approvals for the Durable Object export and Cron trigger, secrets via `cf workers secrets bulk`, no `keep_vars`, the rollback caveat and live logs. Owner decisions are unchanged.
 - 2026-10-08: initial plan, based on the official docs listed in §2.
 - 2026-10-08: owner chose the paired local connect as the interim path. Added §6.12, connect modes, pairing API and data, threats, Phase 2 tasks 2.4a–2.4d and Q13–Q14. Added Cloudflare Managed OAuth and `cloudflared` research.
 - 2026-10-08: owner decided weekly keep-alive, npm distribution via `npx`, and `cloudflared` upload. Binding Cookie recommendation reversed, since it is incompatible with non-browser tools.

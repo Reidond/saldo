@@ -1,6 +1,6 @@
 # Private ChatGPT connection
 
-> **Planned replacement:** the hosted in-app connection, direct-from-Worker inference and retirement of this bridge are planned in [plans/chatgpt-connect-and-login.md](plans/chatgpt-connect-and-login.md). This page documents the current, implemented bridge.
+> **Planned replacement:** [plans/chatgpt-connect-and-login.md](plans/chatgpt-connect-and-login.md) plans a paired local connect from Settings (interim), the hosted in-app connection (target), inference directly from `saldo-api`, and retirement of this bridge. This page documents the current, implemented bridge.
 
 Saldo uses the official Sign in with ChatGPT (SIWC) open-source flow. There is no API-key fallback, copied Codex login, browser-session extraction, or public token endpoint. **A disconnected app remains usable for manual tracking and imports.** AI becomes available only after the owner authorizes their own registration and explicitly installs it in their own Cloudflare account.
 
