@@ -1,0 +1,6 @@
+CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY, account_id TEXT NOT NULL REFERENCES accounts(id), role TEXT NOT NULL CHECK(role = 'owner' OR role = 'member'), status TEXT NOT NULL DEFAULT 'active' CHECK(status = 'active' OR status = 'disabled'), display_name TEXT, email TEXT, sessions_valid_after INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE INDEX IF NOT EXISTS users_by_account ON users(account_id);
+CREATE TABLE IF NOT EXISTS user_identities(provider TEXT NOT NULL CHECK(provider = 'cloudflare_access'), issuer TEXT NOT NULL, subject TEXT NOT NULL, user_id TEXT NOT NULL REFERENCES users(id), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, last_seen_at TEXT, PRIMARY KEY(provider, issuer, subject));
+CREATE INDEX IF NOT EXISTS user_identities_by_user ON user_identities(user_id);
+CREATE TABLE IF NOT EXISTS audit_events(id TEXT PRIMARY KEY, account_id TEXT NOT NULL REFERENCES accounts(id), actor_user_id TEXT REFERENCES users(id), action TEXT NOT NULL, target_type TEXT, target_id TEXT, summary TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(summary)), created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+CREATE INDEX IF NOT EXISTS audit_events_by_account_time ON audit_events(account_id, created_at);

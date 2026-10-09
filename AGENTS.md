@@ -51,7 +51,49 @@ Target one package with `vp run --filter @saldo/<name> <script>` (for example `v
 
 ## Backend architecture (apps/api)
 
-<!-- Filled in by the backend layer. -->
+`apps/api` is an [Elysia](https://elysiajs.com) app on Elysia's Cloudflare Worker adapter. It is split into strict layers. `apps/api/tests/architecture.test.ts` fails on any import or SQL that crosses them. The HTTP contract, tests and configuration are documented in [apps/api/README.md](apps/api/README.md).
+
+1. **HTTP handlers** (`src/http/routes/*`, with guards in `src/http/context.ts`). Each handler reads and validates input, takes the authenticated `actor` from the guard, calls one service method, and returns `json(...)`. Errors are thrown and mapped in one place, `src/http/errors.ts`. Handlers never import `repositories/*` or `infrastructure/*`, never touch D1 or SQL, and hold no business logic. Read bodies only with `readBody` (it enforces the upload limit after authentication). Never use Elysia's `body`.
+
+   ```ts
+   app.post("/api/review", async ({ request, scope, actor }) => {
+     const review = reviewSchema.parse(await readBody(request));
+     return json(await scope.services.reviews.apply(actor, review));
+   });
+   ```
+
+2. **Services** (`src/services/*`). There is one class per business capability: `IdentityService`, `SubscriptionService`, `ReviewService` and `ChatService`. Each use case is a method that takes the `Actor` it acts for. Services hold the business rules, compose repository functions, and own transactions (`db.batch`). They receive every dependency through their constructor: `db`, the repository functions, `Clock`, `IdGenerator`, `AccessTokenVerifier` and `AiProvider` (ports in `src/services/ports.ts`). They import repositories only as types, so tests can pass the fakes in `tests/support/fakes.ts`. Business outcomes are error classes in `src/services/errors.ts`. Only the chat service may depend on `AiProvider`; manual workflows must keep working when AI is disabled.
+
+   ```ts
+   await db.batch([
+     repos.insertReviewStatement(db, actor.accountId, review.requestId),
+     ...changed.map((s) => repos.upsertSubscriptionStatement(db, row(s))),
+   ]);
+   ```
+
+3. **Repositories** (`src/repositories/*`). This is the only code that contains SQL. Each statement is its own named, exported and typed function that takes `db` first: `listSubscriptionsByAccount(db, accountId)` or `findUserByIdentity(db, identity)`. A write that services batch is exposed as a statement builder, `…Statement(db, row)`, that returns a `D1PreparedStatement`. Repositories map rows to typed objects and contain no business logic. Register new functions in `src/repositories/index.ts`.
+
+   ```ts
+   export function insertReviewStatement(
+     db: D1Database,
+     accountId: string,
+     requestId: string,
+   ) {
+     return db
+       .prepare("INSERT INTO reviews(account_id, request_id) VALUES (?, ?)")
+       .bind(accountId, requestId);
+   }
+   ```
+
+4. **Pure domain logic** (money, recurrence, validation, review rules) stays in `packages/domain`. Every layer may import it.
+
+Infrastructure adapters (`src/infrastructure/*`) implement service ports: the jose Access verifier, the bridge and disabled AI providers, and the clock and ids. They may import service ports and errors, never HTTP or repositories. `src/worker.ts` is the composition root and the only module that reads `Env`. It builds the adapters and services for each request and hands them to the Elysia app, which is compiled once at startup.
+
+More rules:
+
+- **Fail closed.** Authentication accepts only a verified `Cf-Access-Jwt-Assertion` whose subject is exactly `OWNER_SUB`, and it never trusts email or other identity headers. Every account query is scoped by `actor.accountId`.
+- **Migrations are additive.** `scripts/ci/migrations.ts` accepts only a small additive SQL subset. A new table also goes into the `deleteOrder` list in `tests/support/d1.ts`.
+- **Tests.** Handler tests use fake services, service tests use the in-memory fakes, and repository tests run against the local D1 from `tests/support/d1.ts`. A change to the HTTP contract also updates `tests/http-contract.test.ts` and `apps/api/README.md`.
 
 ## Frontend (apps/web)
 

@@ -1,21 +1,22 @@
 import { describe, it, expect } from "vite-plus/test";
-import { authenticate, validOrigin } from "../src/auth";
+import { isAllowedOrigin } from "../../src/http/origin";
+import worker, { type Env } from "../../src/worker";
+
 describe("boundaries", () => {
   it("fails closed without auth setup or on forged headers", async () => {
-    expect(
-      await authenticate(
-        new Request("https://saldo.test", {
-          headers: {
-            "Cf-Access-Authenticated-User-Email": "owner@example.com",
-          },
-        }),
-        {},
-      ),
-    ).toBeNull();
+    const response = await worker.fetch(
+      new Request("https://saldo.test/api/subscriptions", {
+        headers: {
+          "Cf-Access-Authenticated-User-Email": "owner@example.com",
+        },
+      }),
+      { APP_ORIGIN: "https://saldo.test" } as Env,
+    );
+    expect(response.status).toBe(401);
   });
   it("rejects cross-origin mutations", () => {
     expect(
-      validOrigin(
+      isAllowedOrigin(
         new Request("https://saldo.test/api", {
           method: "POST",
           headers: { Origin: "https://evil.test" },
@@ -24,7 +25,7 @@ describe("boundaries", () => {
       ),
     ).toBe(false);
     expect(
-      validOrigin(
+      isAllowedOrigin(
         new Request("https://saldo.test/api", {
           method: "POST",
           headers: { Origin: "https://saldo.test" },
