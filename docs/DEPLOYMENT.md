@@ -3,7 +3,7 @@
 Deployment is not performed by these files. Placeholder resource IDs must be replaced by the owner. Creating resources, persistent OAuth access, accepting terms or activating a paid plan requires the owner's authorization.
 
 1. Create a private GitHub repository or publish only this audited MIT source. Never commit inventory CSVs, screenshots, `.dev.vars`, token stores, or environment secrets.
-2. In the owner's Cloudflare account, create a D1 database and private R2 bucket. Replace the placeholder ID in `wrangler.jsonc`. Apply `migrations/0001_core.sql` remotely only after confirming the correct account/database.
+2. In the owner's Cloudflare account, create a D1 database and private R2 bucket. Replace the placeholder ID in `apps/api/wrangler.jsonc`. Apply `apps/api/migrations/0001_core.sql` remotely only after confirming the correct account/database.
 3. Configure an owner-only Cloudflare Access self-hosted application for the intended hostname (for example `saldo.sands.red`). Protect all paths. Add only the owner to the allow policy; do not create a public bypass.
 4. Set `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD`, `OWNER_SUB` and `APP_ORIGIN` for the Worker. `OWNER_SUB` is the verified subject from the owner's Access session, not an arbitrary email header. Set all identity configuration privately. Never expose Cloudflare management credentials to the app.
 5. Build and deploy static assets plus the Worker. Disable any unprotected alternate hostname/routes; the application also independently rejects missing or invalid Access JWTs. Verify unauthorized requests receive 401 and cross-origin mutations receive 403 before loading private records.

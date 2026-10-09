@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { validateMigration } from "../scripts/ci/migrations";
 
 const migrationScript = resolve("scripts/ci/migrations.ts");
@@ -19,7 +19,9 @@ const smokeScript = resolve("scripts/ci/smoke-image.ts");
 describe("fail-closed additive migration policy", () => {
   it("accepts the complete existing migration", () => {
     expect(
-      validateMigration(readFileSync("migrations/0001_core.sql", "utf8")),
+      validateMigration(
+        readFileSync("apps/api/migrations/0001_core.sql", "utf8"),
+      ),
     ).toEqual({ statementCount: 6 });
   });
 
@@ -140,7 +142,7 @@ describe("fail-closed additive migration policy", () => {
   it("does not accept a caller-selected subset of migrations", () => {
     const result = spawnSync(
       process.execPath,
-      [migrationScript, "migrations/0001_core.sql"],
+      [migrationScript, "apps/api/migrations/0001_core.sql"],
       {
         encoding: "utf8",
         timeout: 10_000,
@@ -160,10 +162,10 @@ describe("fail-closed additive migration policy", () => {
   ])("fails the whole repository scan for %s migration input", (variant) => {
     const root = mkdtempSync(join(tmpdir(), "saldo-migrations-test-"));
     const scriptDirectory = join(root, "scripts", "ci");
-    const migrations = join(root, "migrations");
+    const migrations = join(root, "apps", "api", "migrations");
     mkdirSync(scriptDirectory, { recursive: true });
     copyFileSync(migrationScript, join(scriptDirectory, "migrations.ts"));
-    mkdirSync(migrations);
+    mkdirSync(migrations, { recursive: true });
     try {
       if (variant !== "empty") {
         writeFileSync(

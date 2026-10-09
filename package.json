@@ -4,53 +4,26 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1",
-    "build": "tsc --noEmit && vite build",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "lint": "eslint .",
-    "preview": "vite preview --host 127.0.0.1",
-    "worker:dev": "wrangler dev --config wrangler.jsonc",
-    "db:migrate": "wrangler d1 migrations apply saldo --local --config wrangler.jsonc",
-    "format": "prettier --write src server bridge tests docs README.md",
-    "check": "npm run typecheck && npm run lint && npm test && npm run build && npm run check:bridge",
-    "check:bridge": "tsc -p bridge/tsconfig.json && tsc -p bridge/tsconfig.node.json",
-    "cf:setup": "npm ci --prefix deployment",
-    "cf:build:app": "npm run build && cd deployment && cf build --mode app",
-    "cf:build:bridge": "npm run check:bridge && cd deployment && cf build --mode bridge",
-    "cf:check:app": "npm run cf:build:app && cd deployment && cf deploy --dry-run --prebuilt --mode app",
-    "cf:check:bridge": "npm run cf:build:bridge && cd deployment && cf deploy --dry-run --prebuilt --mode bridge --containers-rollout none"
-  },
-  "dependencies": {
-    "@cloudflare/containers": "^0.3.7",
-    "jose": "^6.0.0",
-    "lucide-react": "^0.468.0",
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0",
-    "zod": "^4.0.0"
+    "dev": "vp run --filter @saldo/web dev",
+    "dev:api": "vp run --filter @saldo/api dev",
+    "build": "vp run -r build",
+    "preview": "vp run --filter @saldo/web preview",
+    "test": "vp test",
+    "lint": "vp lint",
+    "format": "vp fmt",
+    "typecheck": "vp run -r typecheck && tsc --noEmit",
+    "check": "vp check && vp run typecheck && vp test && vp run build",
+    "db:migrate": "vp run --filter @saldo/api db:migrate",
+    "cf:build:app": "vp run --filter @saldo/web build && pnpm --filter @saldo/deployment exec cf build --mode app",
+    "cf:build:bridge": "vp run --filter @saldo/bridge typecheck && pnpm --filter @saldo/deployment exec cf build --mode bridge",
+    "cf:check:app": "vp run cf:build:app && pnpm --filter @saldo/deployment exec cf deploy --dry-run --prebuilt --mode app",
+    "cf:check:bridge": "vp run cf:build:bridge && pnpm --filter @saldo/deployment exec cf deploy --dry-run --prebuilt --mode bridge --containers-rollout none"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^5.20261008.1",
-    "@eslint/js": "^9.0.0",
-    "@testing-library/react": "^16.3.3",
-    "@testing-library/user-event": "^14.6.7",
-    "@types/node": "^22.0.0",
-    "@types/react": "^19.1.0",
-    "@types/react-dom": "^19.1.0",
-    "@vitejs/plugin-react": "^6.1.2",
-    "cf": "1.0.0-beta.13",
-    "eslint": "^9.0.0",
-    "jsdom": "^30.1.2",
-    "playwright": "^1.51.0",
-    "prettier": "^3.9.9",
-    "tsx": "^4.0.0",
-    "typescript": "^5.8.0",
-    "typescript-eslint": "^8.0.0",
-    "vite": "^8.3.3",
-    "vitest": "^5.0.3",
-    "wrangler": "^4.0.0"
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vite-plus": "catalog:",
+    "wrangler": "catalog:"
   },
-  "overrides": {
-    "sharp": "^0.35.5"
-  }
+  "packageManager": "pnpm@12.9.1"
 }

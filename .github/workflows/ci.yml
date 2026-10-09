@@ -26,13 +26,14 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
-          cache: npm
-      - run: npm ci
-      - run: npm run check
+      - name: Enable the pinned pnpm from packageManager
+        run: corepack enable pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run check
       - name: Require additive-only database migrations
         run: node scripts/ci/migrations.ts
       - name: Build the Linux amd64 bridge image
-        run: docker build --platform linux/amd64 --file bridge/Dockerfile --tag saldo-ai-bridge:ci .
+        run: docker build --platform linux/amd64 --file apps/bridge/Dockerfile --tag saldo-ai-bridge:ci .
       - name: Smoke-test rejection paths without network access
         run: node scripts/ci/smoke-image.ts
 
@@ -58,16 +59,17 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "24"
-          cache: npm
       - name: Require the protected Environment token
         env:
           TOKEN_CONFIGURED: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
         run: test "$TOKEN_CONFIGURED" = true
-      - run: npm ci
-      - run: npm run check
+      - name: Enable the pinned pnpm from packageManager
+        run: corepack enable pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run check
       - run: node scripts/ci/migrations.ts
       - name: Build the exact bridge source on Linux amd64
-        run: docker build --platform linux/amd64 --file bridge/Dockerfile --tag saldo-ai-bridge:ci .
+        run: docker build --platform linux/amd64 --file apps/bridge/Dockerfile --tag saldo-ai-bridge:ci .
       - run: node scripts/ci/smoke-image.ts
       - name: Refuse an outdated main commit before any mutation
         run: node scripts/ci/deployment.ts current-main
@@ -85,16 +87,16 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           wranglerVersion: "4.148.0"
-          packageManager: npm
+          packageManager: pnpm
           quiet: true
-          command: deploy --config bridge/wrangler.jsonc --keep-vars --containers-rollout immediate
+          command: deploy --config apps/bridge/wrangler.jsonc --keep-vars --containers-rollout immediate
       - name: Upload and activate the app without changing domain routes
         uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0 # v4.1.3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           wranglerVersion: "4.148.0"
-          packageManager: npm
+          packageManager: pnpm
           quiet: true
           command: |
             versions upload --config "${{ runner.temp }}/saldo-app.wrangler.json" --keep-vars --tag "${{ env.SALDO_RELEASE_TAG }}"

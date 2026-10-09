@@ -1,0 +1,32 @@
+{
+  "name": "@saldo/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vp dev --host 127.0.0.1",
+    "build": "tsc --noEmit && vp build",
+    "preview": "vp preview --host 127.0.0.1",
+    "test": "vp test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@saldo/domain": "workspace:*",
+    "lucide-react": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:"
+  },
+  "devDependencies": {
+    "@testing-library/react": "catalog:",
+    "@testing-library/user-event": "catalog:",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "@vitejs/plugin-react": "catalog:",
+    "jsdom": "catalog:",
+    "playwright": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "name": "@saldo/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --config wrangler.jsonc",
+    "db:migrate": "wrangler d1 migrations apply saldo --local --config wrangler.jsonc",
+    "test": "vp test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@saldo/domain": "workspace:*",
+    "jose": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "catalog:",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vite-plus": "catalog:",
+    "wrangler": "catalog:"
+  }
+}

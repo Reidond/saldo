@@ -19,16 +19,18 @@ Cloudflare Container disk is ephemeral. The OAuth vault is deliberately stored i
 
 These steps create persistent access and deploy billable infrastructure. The owner must perform them in a trusted local terminal after reviewing the scopes and Cloudflare costs. Do not paste keys, tokens, credential files, or authorization URLs into a chat or an issue. Never ask an assistant to read or transmit them.
 
-Prerequisites: Node 24, dependencies installed with `npm ci`, a Docker-compatible engine for Cloudflare image builds, an authenticated Wrangler session, Cloudflare Workers/Containers availability, and an eligible ChatGPT account. Use the same Saldo source for local authorization and the remote runtime.
+Prerequisites: Node 24, dependencies installed with `pnpm install` from the repository root, a Docker-compatible engine for Cloudflare image builds, an authenticated Wrangler session, Cloudflare Workers/Containers availability, and an eligible ChatGPT account. Use the same Saldo source for local authorization and the remote runtime.
 
 ### 1. Create protected local state
 
 Run on the same computer as your browser:
 
 ```sh
-npx tsx bridge/bootstrap.ts init
-npx tsx bridge/bootstrap.ts login --new "Personal"
+pnpm --filter @saldo/bridge run bootstrap init
+pnpm --filter @saldo/bridge run bootstrap login --new "Personal"
 ```
+
+Run these from the repository root. The helper runs inside `apps/bridge`, so pass absolute paths (such as `~/.config/saldo/...`) wherever a command takes a file.
 
 The helper creates an owner-only state directory at `~/.config/saldo/`, a private `state.key`, and encrypted `oauth.enc.json`. `SALDO_STATE_DIR` and `SALDO_KEY_FILE` can override these locations. Keep them outside the repository and shared/synced folders. Back up the key separately from encrypted state if you need recovery.
 
@@ -39,8 +41,8 @@ The requested scopes are `openid profile email offline_access resource.invoke ch
 For a saved registration:
 
 ```sh
-npx tsx bridge/bootstrap.ts accounts
-npx tsx bridge/bootstrap.ts login YOUR_ISSUED_CLIENT_ID
+pnpm --filter @saldo/bridge run bootstrap accounts
+pnpm --filter @saldo/bridge run bootstrap login YOUR_ISSUED_CLIENT_ID
 ```
 
 Reauthorization reuses that registration and this computer's stable host ID. If a new registration was issued but code exchange failed, use `login --resume` rather than creating another registration. An interrupted helper may leave `.bootstrap-lock`; remove it only after confirming no bootstrap process is running. There is no automatic stale-lock bypass.
@@ -52,19 +54,19 @@ Generate a separate random bridge secret into an owner-only file using a trusted
 The following are **user-run commands**, not automatic setup:
 
 ```sh
-npx wrangler secret put AI_BRIDGE_SECRET --config wrangler.jsonc < /private/path/bridge-secret
-npx wrangler secret put AI_BRIDGE_SECRET --config bridge/wrangler.jsonc < /private/path/bridge-secret
-npx wrangler secret put SIWC_STATE_KEY --config bridge/wrangler.jsonc < ~/.config/saldo/state.key
+pnpm exec wrangler secret put AI_BRIDGE_SECRET --config apps/api/wrangler.jsonc < /private/path/bridge-secret
+pnpm exec wrangler secret put AI_BRIDGE_SECRET --config apps/bridge/wrangler.jsonc < /private/path/bridge-secret
+pnpm exec wrangler secret put SIWC_STATE_KEY --config apps/bridge/wrangler.jsonc < ~/.config/saldo/state.key
 ```
 
 Use the overridden key path if applicable. Initial secret installation may require creating/deploying the Worker first; follow Wrangler's prompt only for the intended private Worker in your account. Keep app Access settings and owner subject correct before enabling the application. Runtime secret creation and any OAuth/cloud login are owner actions.
 
 ### 3. Deploy the bridge and transfer the selected registration
 
-Review `bridge/wrangler.jsonc`: the service is `saldo-ai-bridge`, with one Container attached to the `SaldoAI` Durable Object. The current image uses the supported `Container` class with its default scheduling policy. Do not switch its scheduling policy to `durable_object` without porting to Cloudflare's direct Container API.
+Review `apps/bridge/wrangler.jsonc`: the service is `saldo-ai-bridge`, with one Container attached to the `SaldoAI` Durable Object. The current image uses the supported `Container` class with its default scheduling policy. Do not switch its scheduling policy to `durable_object` without porting to Cloudflare's direct Container API.
 
 ```sh
-npx wrangler deploy --config bridge/wrangler.jsonc
+pnpm exec wrangler deploy --config apps/bridge/wrangler.jsonc
 ```
 
 Bind the app's `AI` service to `saldo-ai-bridge` in the application Wrangler configuration. Use a service binding, not a public bridge URL. Do not add a route, workers.dev endpoint, preview URL, or public container port.
@@ -72,8 +74,8 @@ Bind the app's `AI` service to `saldo-ai-bridge` in the application Wrangler con
 Export a freshly validated registration:
 
 ```sh
-npx tsx bridge/bootstrap.ts export ~/.config/saldo/transfer.enc.json
-npx wrangler secret bulk ~/.config/saldo/transfer.enc.json.secrets.json --config bridge/wrangler.jsonc
+pnpm --filter @saldo/bridge run bootstrap export ~/.config/saldo/transfer.enc.json
+pnpm exec wrangler secret bulk ~/.config/saldo/transfer.enc.json.secrets.json --config apps/bridge/wrangler.jsonc
 ```
 
 The helper also writes a protected `.secrets.json` file containing only encrypted bundle chunks and their count. Each chunk stays below Cloudflare’s 5KB secret-value limit; Wrangler imports them together. The bundle is authenticated-encrypted with the state key and has a 30-minute initial import window. Open the owner-authenticated Saldo app and refresh its connection status. The first status/chat request imports the selected registration into durable storage. The app reports connected only after the vault is usable. Never infer import success merely from a successful secret upload.
@@ -81,7 +83,7 @@ The helper also writes a protected `.secrets.json` file containing only encrypte
 After the app reports connected, remove all temporary import secrets together using the generated cleanup file (its values are null, which Wrangler bulk interprets as deletion):
 
 ```sh
-npx wrangler secret bulk ~/.config/saldo/transfer.enc.json.cleanup.json --config bridge/wrangler.jsonc
+pnpm exec wrangler secret bulk ~/.config/saldo/transfer.enc.json.cleanup.json --config apps/bridge/wrangler.jsonc
 ```
 
 This removes `SIWC_BOOTSTRAP_PARTS` and all chunks generated for that bundle. If a prior import used more chunks, remove any leftover higher-numbered chunk secrets too; they are ignored and hold only encrypted data. Securely remove the transfer/import/cleanup files using your normal operating-system process. Keep your local protected account mapping for reauthorization; it will become stale as the remote runtime rotates tokens. The local helper never performs background refresh or inference. Let the remote runtime be the only refresh owner.
@@ -114,9 +116,9 @@ Keep observability/request-body tracing off for this bridge, including any exter
 ## Verification
 
 ```sh
-npx tsc -p bridge/tsconfig.json
-npx tsc -p bridge/tsconfig.node.json
-npx vitest run bridge/siwc.test.ts
+pnpm --filter @saldo/bridge run typecheck
+pnpm --filter @saldo/bridge run test
+pnpm --filter @saldo/bridge run build
 ```
 
 Automated tests use only synthetic credentials and local streams. A real OAuth round trip, deployed Container startup, durable import, expiry/rotation, and live inference still require an owner-run deployment acceptance check. Tests do not establish live account eligibility or deployment readiness.

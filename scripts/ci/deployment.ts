@@ -3,6 +3,7 @@ import {
   writeFileSync,
   mkdirSync,
   appendFileSync,
+  realpathSync,
 } from "node:fs";
 import { resolve, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -145,13 +146,13 @@ export function makeAppConfig(
   validateApp(settings, databaseId);
   return {
     name: "saldo",
-    main: resolve(root, "server/worker.ts"),
+    main: resolve(root, "apps/api/src/worker.ts"),
     compatibility_date: "2026-10-01",
     workers_dev: false,
     preview_urls: false,
     observability: { enabled: false },
     assets: {
-      directory: resolve(root, "dist"),
+      directory: resolve(root, "apps/web/dist"),
       binding: "ASSETS",
       run_worker_first: true,
     },
@@ -160,7 +161,7 @@ export function makeAppConfig(
         binding: "DB",
         database_name: "saldo",
         database_id: databaseId,
-        migrations_dir: resolve(root, "migrations"),
+        migrations_dir: resolve(root, "apps/api/migrations"),
       },
     ],
     r2_buckets: [
@@ -439,9 +440,10 @@ export async function verify() {
     "Settings, secret binding names, private endpoints and anonymous access verified. Owner login and live ChatGPT acceptance remain separate.",
   );
 }
+// Compare real paths so a symlinked checkout cannot skip every safety step.
 if (
   process.argv[1] &&
-  import.meta.url === pathToFileURL(resolve(process.argv[1])).href
+  import.meta.url === pathToFileURL(realpathSync(resolve(process.argv[1]))).href
 ) {
   const action = process.argv[2];
   try {

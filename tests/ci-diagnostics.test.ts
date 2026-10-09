@@ -1,4 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vite-plus/test";
 import { api, apiOperations } from "../scripts/ci/deployment";
 beforeEach(() => {
   vi.stubEnv("CLOUDFLARE_ACCOUNT_ID", "a".repeat(32));
