@@ -85,7 +85,9 @@ jobs:
           SALDO_OWNER_SUB: ${{ secrets.SALDO_OWNER_SUB }}
         run: pnpm run build
       - name: Validate the release Build Output with cf, without credentials
-        run: pnpm run deploy:check
+        # cf prints var values (ACCESS_AUD cut to a prefix GitHub cannot mask).
+        shell: bash
+        run: pnpm run deploy:check 2>&1 | sed -E '/Environment Variable/ s/(env\.[A-Za-z0-9_]+) \(.*\)/\1 (value hidden)/'
       - name: Smoke-test the bridge image that will be deployed
         run: node scripts/ci/smoke-image.ts
       - name: Verify Build Output, live private settings and D1 recovery point
@@ -118,6 +120,8 @@ jobs:
         run: node scripts/ci/deployment.ts verify
       - name: Record the commit and each Worker's version
         if: always()
+        env:
+          SALDO_JOB_STATUS: ${{ job.status }}
         run: node scripts/ci/deployment.ts record
       - name: Remove ephemeral private state
         if: always()

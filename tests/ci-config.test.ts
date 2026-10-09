@@ -238,6 +238,14 @@ it("requires the exact existing bridge namespace class and local Worker identity
     expect(() =>
       validateBridge({ bindings: [{ ...binding, ...patch }] }),
     ).toThrow();
+  // cf deploy keeps secrets but would delete an undeclared plain or JSON var.
+  validateBridge({
+    bindings: [binding, { name: "AI_BRIDGE_SECRET", type: "secret_text" }],
+  });
+  for (const type of ["plain_text", "json"])
+    expect(() =>
+      validateBridge({ bindings: [binding, { name: "SIWC_MODEL", type }] }),
+    ).toThrow(/would delete/);
 });
 it("rejects stale or unverified main commits before mutations", () => {
   const sha = "a".repeat(40);
@@ -513,5 +521,11 @@ describe("idempotent releases", () => {
       text: expect.stringContaining("Release failed"),
     });
     expect(summarize(undefined).ok).toBe(false);
+    const laterFailure = summarize(
+      state("deployed", "deployed", "deployed"),
+      "failure",
+    );
+    expect(laterFailure.ok).toBe(false);
+    expect(laterFailure.text).toContain("deployed, but a later check failed");
   });
 });

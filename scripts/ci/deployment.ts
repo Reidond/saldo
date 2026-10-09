@@ -234,9 +234,17 @@ export function validateBridge(settings: Settings) {
   for (const binding of settings.bindings) {
     if (
       binding.name !== "SALDO_AI" &&
-      ["plain_text", "json", "secret_text", "secret_key"].includes(binding.type)
+      ["secret_text", "secret_key"].includes(binding.type)
     )
       continue;
+    // cf deploy keeps secrets but deletes undeclared plain or JSON vars.
+    if (
+      binding.name !== "SALDO_AI" &&
+      ["plain_text", "json"].includes(binding.type)
+    )
+      throw new Error(
+        "The live bridge has a plain variable that cf deploy would delete; declare it in apps/bridge/cloudflare.config.ts or remove it first",
+      );
     if (
       Object.keys(binding).some(
         (key) =>
@@ -898,7 +906,10 @@ export async function verify() {
   );
 }
 /** A summary of the run for the job summary; fails if anything failed. */
-export function summarize(state: ReleaseState | undefined) {
+export function summarize(
+  state: ReleaseState | undefined,
+  jobStatus = "success",
+) {
   if (!state)
     return {
       ok: false,
@@ -910,12 +921,15 @@ export function summarize(state: ReleaseState | undefined) {
   });
   const outcomes = deployOrder.map((c) => state.components[c].outcome);
   const failed = outcomes.includes("failed");
-  const done = outcomes.every((o) => o === "deployed" || o === "unchanged");
+  const deployed = outcomes.every((o) => o === "deployed" || o === "unchanged");
+  const done = deployed && jobStatus === "success";
   const status = done
     ? "complete"
-    : failed && outcomes.some((o) => o === "deployed")
-      ? "partial: some components changed before a failure"
-      : "failed";
+    : deployed
+      ? "deployed, but a later check failed"
+      : failed && outcomes.some((o) => o === "deployed")
+        ? "partial: some components changed before a failure"
+        : "failed";
   return {
     ok: done,
     text: [
@@ -933,7 +947,7 @@ export function record() {
   const temp = process.env.RUNNER_TEMP ?? "";
   const state =
     temp && existsSync(statePath(temp)) ? readState(temp) : undefined;
-  const { ok, text: summary } = summarize(state);
+  const { ok, text: summary } = summarize(state, process.env.SALDO_JOB_STATUS);
   if (process.env.GITHUB_STEP_SUMMARY)
     appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
   console.log(summary);

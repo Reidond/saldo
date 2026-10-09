@@ -85,6 +85,15 @@ describe("cf replaces Wrangler in CI", () => {
     );
     expect(workflow).toContain("DOCKER_DEFAULT_PLATFORM: linux/amd64");
   });
+  it("hides var values when validating the release build", () => {
+    const check = step("Validate the release Build Output");
+    expect(check).toContain("shell: bash");
+    expect(check).toContain("pnpm run deploy:check 2>&1 | sed -E");
+    expect(check).toContain("(value hidden)");
+    expect(step("deployment.ts record")).toContain(
+      "SALDO_JOB_STATUS: ${{ job.status }}",
+    );
+  });
   it("builds the release with the protected settings before validating it", () => {
     const build = step("pnpm run build");
     expect(build).toContain("SALDO_RELEASE: production");
