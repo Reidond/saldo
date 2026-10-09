@@ -2,7 +2,7 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "jsx": "react-jsx",
-    "types": ["node", "vite-plus/client"]
+    "types": ["node", "vite-plus/client", "@vitejs/plugin-rsc/types"]
   },
   "include": ["src", "tests", "vite.config.ts", "cloudflare.config.ts"]
 }

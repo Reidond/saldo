@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it, expect } from "vite-plus/test";
 import {
   parseSettings,
@@ -7,6 +10,7 @@ import {
   makeAppConfig,
   validateBridge,
   assertLatestMain,
+  assertLegacyWebBuild,
   type Settings,
 } from "../scripts/ci/deployment";
 const id = "00000000-0000-0000-0000-000000000001";
@@ -181,4 +185,11 @@ it("rejects stale or unverified main commits before mutations", () => {
   ).not.toThrow();
   expect(() => assertLatestMain(sha, "b".repeat(40))).toThrow();
   expect(() => assertLatestMain(sha, "")).toThrow();
+});
+it("refuses to deploy a web build that is no longer a single-page app", () => {
+  const root = mkdtempSync(join(tmpdir(), "saldo-web-build-"));
+  mkdirSync(join(root, "apps/web/dist/client"), { recursive: true });
+  expect(() => assertLegacyWebBuild(root)).toThrow("before any change");
+  writeFileSync(join(root, "apps/web/dist/index.html"), "<!doctype html>");
+  expect(() => assertLegacyWebBuild(root)).not.toThrow();
 });

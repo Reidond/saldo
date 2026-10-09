@@ -97,7 +97,42 @@ More rules:
 
 ## Frontend (apps/web)
 
-<!-- Filled in by the frontend layer. -->
+apps/web is its own Cloudflare Worker (`saldo-web`, `apps/web/wrangler.jsonc`): React 19 Server Components with streaming SSR through `@vitejs/plugin-rsc` and `@cloudflare/vite-plugin`, styled with Tailwind CSS v4. It stores nothing; all data comes from the API Worker over the `API` service binding. `vp build` writes the Worker to `dist/rsc` (SSR in `dist/rsc/ssr`) and the static assets to `dist/client`.
+
+| Path                     | Contents                                                                                                                                  |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/framework`          | RSC, SSR and browser entries, the RSC request protocol, client navigation. Keep app logic out of here.                                    |
+| `src/server`             | Server-only code: `gate.ts` (runs first on every request), `access.ts`, `config.ts`, `context.ts`, `actions.ts`, route handlers, the API. |
+| `src/server/api`         | The `ApiClient` interface, the service-binding client and the synthetic client. The only code that talks to the API.                      |
+| `src/app/pages`, `shell` | Server components, one per screen, plus the app shell.                                                                                    |
+| `src/app/client`         | `"use client"` components and the tab-only drafts store.                                                                                  |
+| `src/app/ui`             | Server-safe primitives (no hooks) and class helpers, usable from both sides.                                                              |
+| `src/lib`                | Pure logic shared by server and client: formatting, totals, issues, filters, form parsing, preferences.                                   |
+
+**Request flow and security.** `src/server/gate.ts` runs before anything renders, static assets included (`run_worker_first`). It resolves the configuration and fails closed with a static 503 page when the `API` binding, `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD` or `APP_ORIGIN` is missing. It then verifies the Cloudflare Access JWT itself (RS256, issuer, audience, expiry, non-empty `sub`, `type: "app"`) and answers anything unverified with a static 401 page that holds no data. Only then does it create the request context. Server actions and `POST /chat/messages` require `Origin` to equal `APP_ORIGIN` and a bounded `Content-Length`. HTML gets a nonce-based CSP in production builds. Never render, log or return record contents outside an authenticated request.
+
+**RSC boundaries.**
+
+- Components are server components by default. Add `"use client"` only for interaction (forms with `useActionState`, the chat composer and attachment picker, review cards, filters, menus), and keep those components small.
+- Server components read data with `getRequestContext().load.*` (memoized per request) and render failures with `attempt()` and `LoadError` from `src/app/pages/shared.tsx`; never let an API error throw out of a page.
+- Pass server actions to client components as props from server components. Client components never import `src/server/*`, except types.
+- Never export non-component values from a `"use client"` module for server code to use: constants shared with the server live in `src/lib` or `src/app/routes.ts`.
+- Mark server-only modules with `import "server-only"`; the plugin then fails the build if the client imports them.
+
+**Data access.** Only `src/server/api` calls the API, through the `ApiClient` interface. The binding client forwards the verified `Cf-Access-Jwt-Assertion` and an `X-Request-Id`, sends `Origin: APP_ORIGIN` on writes, never forwards cookies, and validates every response with zod (the `@saldo/domain` schemas). Its errors are `ApiError`s whose message is safe to show. Mutations are server actions in `src/server/actions.ts`, which return result objects instead of throwing and call `invalidate()` after writing. Chat is a route handler so the browser can cancel it. Review saves are idempotent per `requestId`: a retry reuses it and an edit replaces it.
+
+**Development and tests.** `pnpm dev` serves synthetic, fictional data from the in-memory `SyntheticApiClient`. The dev server sets `SALDO_DATA_SOURCE=synthetic`, and the runtime refuses that value outside a Vite dev server or a test, so production bundles don't contain the synthetic module. Set `SALDO_SYNTHETIC_AI=unavailable` to see the AI-unavailable state, and `SALDO_SYNTHETIC_SCENARIO=empty` or `api-down` to see the empty and error states. Tests in `apps/web/tests` call server modules directly with a synthetic or recording client (`server.test.ts`, `actions.test.ts`, `lib.test.ts`) and render client components in jsdom with a `NavigationContext` provider (`ui.test.tsx`). Vitest loads only `@vitejs/plugin-react`, and aliases `server-only` to a stub.
+
+**Tailwind tokens.** `src/styles.css` defines semantic tokens once for light and dark mode (dark follows the system): `canvas`, `surface`, `surface-hover`, `surface-sunken`, `ink`, `ink-muted`, `ink-faint`, `line`, `line-strong`, `brand`, `brand-soft`, `warn-*`, `danger-*`, `info-*` and `chart-1`…`chart-6`, plus the `shadow-card`, `shadow-card-hover` and `shadow-pop` shadows and the `ease-out` and `ease-snappy` curves. Use these, never raw palette colors or hex values. Build buttons and fields with `buttonClass`, `inputClass` and `selectClass` from `src/app/ui/styles.ts`.
+
+**Design rules** (from the owner's better-ui and emil-design-eng guidance):
+
+- **Mobile first.** Every main action works at 375px without horizontal scroll. Tables become cards below `md`. Controls are 44px tall on phones and 40px from `sm`, and text inputs use 16px text on phones.
+- **Surfaces.** Raised surfaces use a shadow ring rather than a border, and borders are only for dividers. Radii are concentric: a 16px card holds 8px rows with an 8px inset.
+- **Motion.** Transition named properties only (never `transition: all`). Use 150ms `ease-out` for hover and color. Pressable controls scale to `0.96` on `:active`, under `motion-safe`. Use `@starting-style` (`starting:`) for enter states. An icon swap cross-fades with scale 0.25→1, blur 4px→0 and opacity using `ease-snappy`. Never animate navigation or keyboard actions. Every state also has a non-motion cue.
+- **Icons.** One library (lucide). Use `absoluteStrokeWidth` with 1.5 next to regular text and 2 next to medium or semibold text.
+- **Numbers.** Money is `tabular-nums` and formatted per native currency. Never add currencies together. Date-only values never shift with timezone.
+- **Honesty.** Every list and screen has explicit empty, loading, error and AI-unavailable states. Unknown values say "Unknown" or "Not confirmed". Copy never implies AI is connected, or that tracking cancels anything.
 
 ## Deployment
 

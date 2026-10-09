@@ -1,0 +1,20 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  // The web Worker: React Server Components + SSR and the protected static
+  // assets. It holds no data; it calls the API Worker over the `API` service
+  // binding. Deployed separately from apps/api.
+  "name": "saldo-web",
+  "main": "./src/framework/entry.rsc.tsx",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": false },
+  // The Vite plugin fills in the directory (dist/client). Every request, assets
+  // included, reaches the Worker first so nothing is served without Access.
+  "assets": { "binding": "ASSETS", "run_worker_first": true },
+  "services": [{ "binding": "API", "service": "saldo-api" }],
+  // ACCESS_TEAM_DOMAIN and ACCESS_AUD are set at deploy time. Without them, or
+  // without the API binding, every request fails closed with 503.
+  "vars": { "APP_ORIGIN": "http://127.0.0.1:5173" },
+}

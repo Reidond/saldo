@@ -4,6 +4,7 @@ import {
   mkdirSync,
   appendFileSync,
   realpathSync,
+  existsSync,
 } from "node:fs";
 import { resolve, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -137,6 +138,17 @@ export function assertPreserved(before: Settings, after: Settings) {
       )
         throw new Error("A pre-existing Worker binding value changed");
   }
+}
+/**
+ * The app Worker serves apps/web/dist as a single-page app. apps/web now
+ * builds its own RSC Worker (dist/rsc, dist/client) that this pipeline does
+ * not deploy, so stop before any change instead of shipping a page-less app.
+ */
+export function assertLegacyWebBuild(root: string) {
+  if (!existsSync(resolve(root, "apps/web/dist/index.html")))
+    throw new Error(
+      "apps/web builds a separate Worker that this pipeline cannot deploy; deployment stopped before any change",
+    );
 }
 export function makeAppConfig(
   settings: Settings,
@@ -328,6 +340,7 @@ async function inspect(name: "saldo" | "saldo-ai-bridge") {
 }
 export async function prepare() {
   const c = context();
+  assertLegacyWebBuild(c.root);
   mkdirSync(c.temp, { recursive: true });
   const app = await inspect("saldo"),
     bridge = await inspect("saldo-ai-bridge");
