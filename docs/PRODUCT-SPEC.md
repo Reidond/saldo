@@ -4,7 +4,7 @@ Product specification · 8 October 2026
 
 Saldo is a private, mobile-first personal finance manager. Subscription management is its first useful feature: bring recurring payments into one place, understand upcoming renewals and costs, and add or update records by chatting or attaching a screenshot. The product should grow into other finance workflows as its owner defines them.
 
-The intended experience is a hosted web application at saldo.sands.red, with a browser-native Sign in with ChatGPT connection that uses the owner's eligible ChatGPT plan for AI inference. This authentication and inference integration remains an external dependency; a local helper or a permanently running desktop is not part of the desired product.
+The intended experience is a hosted web application at saldo.sands.red, with a browser-native Sign in with ChatGPT connection that uses the owner's eligible ChatGPT plan for AI inference. This authentication and inference integration remains an external dependency; a local helper or a permanently running desktop is not part of the desired product. Until OpenAI approves the hosted flow, the owner has approved a one-time paired connect step from a computer as an interim exception (§7).
 
 > **Current direction:** development is paused at the owner's request. This document preserves the full product idea for a future restart. It does not authorize new implementation, resource changes, paid services, or account access.
 
@@ -59,7 +59,7 @@ Success means the owner can add a subscription from a phone in under a minute wh
 - Multi-user organizations, household permissions, or commercial SaaS billing.
 - Continuous inbox access without a separately approved integration.
 - Automatic reliance on undocumented authentication endpoints.
-- A required local helper, desktop browser extension, or Mac background process.
+- A permanently required local helper, desktop browser extension, or Mac background process. The one-time paired connect step in §7 is the approved interim exception.
 
 The product should support later expansion without building all possible finance modules now.
 
@@ -69,7 +69,7 @@ The product should support later expansion without building all possible finance
 
 1. The owner opens Saldo and passes its owner-access gate.
 2. The app explains where data is stored and how AI requests use supplied information.
-3. The owner connects ChatGPT through the supported browser sign-in flow, when that integration is available.
+3. The owner connects ChatGPT through the supported browser sign-in flow when that integration is available. In the interim, the owner uses the paired connect step from a computer (§7).
 4. The owner chooses display currency, locale, and timezone.
 5. They add a subscription manually, attach a screenshot, or review an explicitly imported candidate list.
 
@@ -194,6 +194,21 @@ Reference documentation:
 
 Provider requirements can change. Revalidate these prerequisites against official documentation before restarting implementation.
 
+### Interim connection path
+
+Owner decision, 8 October 2026.
+
+Until OpenAI approves a hosted client, Saldo connects through a **paired local connect** that follows OpenAI's documented open-source sign-in and self-hosted credential-transfer procedure:
+
+1. In Settings, the owner creates a short-lived, single-use pairing.
+2. On a computer, the owner runs a small helper that completes OpenAI's loopback sign-in locally.
+3. The helper encrypts the credentials to that pairing and hands them to Saldo.
+4. From then on, the hosted runtime alone refreshes and uses them.
+
+The step is needed only to connect or reconnect. Day-to-day use, including on a phone, needs no local software. The owner has adopted a weekly scheduled refresh so that an unused connection does not expire, and the helper is distributed through npm so it can be run with `npx`.
+
+The hosted browser flow remains the target. The owner also asks OpenAI, through the interest form, to confirm that this interim pattern is acceptable, and will revisit the decision when OpenAI answers. The design is in [the ChatGPT connect plan](plans/chatgpt-connect-and-login.md).
+
 ### Integration architecture
 
 Define an AI-provider boundary so extraction, chat, and review UI do not depend on a particular transport. The desired hosted ChatGPT provider implements that boundary when supported. In the meantime, the product must honestly show AI as unavailable and retain manual workflows.
@@ -294,7 +309,7 @@ No personal subscription details or account-specific source messages belong in t
 The first release is ready only when these outcomes are demonstrated:
 
 - The owner can sign in to the app; an unauthorized visitor cannot retrieve any private record, attachment, or chat content.
-- The supported hosted ChatGPT connection completes and a real text-and-image inference request succeeds using the intended entitlement, or the release clearly remains an AI-incomplete milestone.
+- The supported hosted ChatGPT connection completes and a real text-and-image inference request succeeds using the intended entitlement, or the release clearly remains an AI-incomplete milestone. A release whose AI depends on the interim paired connect (§7) must say so.
 - A screenshot creates a reviewable proposal with accurate visible fields and explicit unknowns.
 - Confirming a proposal creates or updates exactly one intended record; retrying does not duplicate it.
 - Duplicate candidates can be resolved without losing source evidence.
@@ -314,7 +329,7 @@ Passing automated tests is necessary but does not substitute for real owner-sess
 
 ### Phase 0 — Resolve the hosted AI dependency
 
-Confirm official hosted client eligibility, callback registration, plan-backed inference access, supported image inputs, and server-side credential requirements. Decide whether to wait if unavailable. Do not replace this requirement with a local helper without a new product decision.
+Confirm official hosted client eligibility, callback registration, plan-backed inference access, supported image inputs, and server-side credential requirements. Decide whether to wait if unavailable. Do not replace this requirement with a local helper without a new product decision. That decision was made on 8 October 2026 for the interim paired connect (§7); the hosted flow remains the target.
 
 ### Phase 1 — Establish the reliable subscription core
 
@@ -348,8 +363,8 @@ Each extension needs its own acceptance criteria, data requirements, privacy rev
 
 ## 15. Open decisions
 
-1. **Hosted ChatGPT eligibility:** can this application obtain the official website client and plan-backed inference access it needs?
-2. **Release boundary:** should a manual-only milestone be used while that dependency is unresolved?
+1. **Hosted ChatGPT eligibility:** can this application obtain the official website client and plan-backed inference access it needs? Still open; ask OpenAI through the interest form.
+2. **Release boundary:** should a manual-only milestone be used while that dependency is unresolved? Decided 8 October 2026: no. Use the interim paired connect (§7), and label releases that depend on it.
 3. **App identity:** what owner-session design should sit behind or alongside Cloudflare Access?
 4. **Preferences:** which display currency, timezone, and locale should be the defaults?
 5. **Retention:** how long should original screenshots and conversations be retained?
