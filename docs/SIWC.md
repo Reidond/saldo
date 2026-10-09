@@ -59,7 +59,7 @@ Generate a separate random bridge secret using a trusted local password manager 
 The following are **user-run commands**, not automatic setup. Run them from the repository root:
 
 ```sh
-pnpm --filter @saldo/api exec cf workers secrets bulk --worker saldo --file /private/path/app-secrets.json
+pnpm --filter @saldo/api exec cf workers secrets bulk --worker saldo-api --file /private/path/app-secrets.json
 pnpm --filter @saldo/bridge exec cf workers secrets bulk --worker saldo-ai-bridge --file /private/path/bridge-secrets.json
 ```
 

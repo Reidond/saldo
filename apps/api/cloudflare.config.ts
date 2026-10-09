@@ -1,6 +1,8 @@
-// The app Worker (Elysia): owner authentication and /api. Converted from
-// wrangler.jsonc by hand along cf's documented field mapping, and built with
-// Vite and the Cloudflare Vite plugin (see vite.config.ts).
+// The API Worker (Elysia): owner authentication and /api. It has no route,
+// custom domain, workers.dev or Preview URL, and no static assets: the web
+// Worker reaches it only over its `API` service binding, and it verifies the
+// forwarded Access token again. Built with Vite and the Cloudflare Vite
+// plugin (see vite.config.ts).
 //
 // D1 migrations live in ./migrations; apply them with
 // `cf d1 migrations apply <DATABASE_ID> --dir migrations` (`pnpm db:migrate`
@@ -25,12 +27,15 @@ export default defineConfig(({ isPreview }) => {
   const release = process.env.SALDO_RELEASE === "production";
   return {
     worker: {
-      name: "saldo",
+      name: "saldo-api",
       entrypoint: "./src/worker.ts",
       compatibilityDate: "2026-10-01",
       workersDev: false,
       previewUrls: false,
       observability: { enabled: false },
+      // A weekly Cron Trigger (ChatGPT keep-alive, docs/plans) is a later
+      // change: triggers.scheduled({ schedule: "..." }) plus a scheduled
+      // handler. It adds no public entry point.
       env: {
         APP_ORIGIN: bindings.text(
           setting("SALDO_APP_ORIGIN", "http://localhost:8787"),

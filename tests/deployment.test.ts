@@ -90,6 +90,13 @@ describe("deployment privacy invariants", () => {
       expect(worker.triggers).toBeUndefined();
     }
   });
+  it("gives the API no public entry point and no assets", () => {
+    const { worker } = evaluate(api);
+    expect(worker.name).toBe("saldo-api");
+    expect(worker.entrypoint).toBe("./src/worker.ts");
+    expect(worker.assets).toBeUndefined();
+    expect(Object.keys(worker.env)).not.toContain("ASSETS");
+  });
   it("routes all web assets through the Worker that verifies Access", () => {
     const { worker } = evaluate(web);
     expect(worker.name).toBe("saldo-web");
@@ -152,20 +159,13 @@ describe("release builds", () => {
     stubRelease();
     const settings = releaseSettings(release);
     expect(canonical(evaluate(api).worker.env)).toBe(
-      canonical(expectedBindings("app", settings)),
+      canonical(expectedBindings("api", settings)),
     );
     expect(canonical(evaluate(bridge).worker.env)).toBe(
       canonical(expectedBindings("bridge", settings)),
     );
-    expect(evaluate(web).worker.env).toEqual({
-      ASSETS: { type: "assets" },
-      API: { type: "worker", worker: "saldo-api" },
-      APP_ORIGIN: { type: "text", value: "https://example.test" },
-      ACCESS_TEAM_DOMAIN: {
-        type: "text",
-        value: "example.cloudflareaccess.com",
-      },
-      ACCESS_AUD: { type: "text", value: "a".repeat(64) },
-    });
+    expect(canonical(evaluate(web).worker.env)).toBe(
+      canonical(expectedBindings("web", settings)),
+    );
   });
 });

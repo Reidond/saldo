@@ -5,7 +5,6 @@ import { actorApp, ownerApp, publicApp, type ScopeResolver } from "./context";
 import { errorResponse } from "./errors";
 import { isAllowedOrigin } from "./origin";
 import { json, notFound } from "./responses";
-import { assetRoutes } from "./routes/assets";
 import { chatRoutes } from "./routes/chat";
 import { meRoutes } from "./routes/me";
 import { reviewRoutes } from "./routes/review";
@@ -44,9 +43,11 @@ export function createApp(scopeOf: ScopeResolver) {
   chatRoutes(api);
   api.all("/api/*", notFound);
 
-  // Everything else is the protected web build, including "/api" itself.
-  const web = ownerApp(scopeOf);
-  assetRoutes(web);
+  // Nothing else exists here, "/api" itself included: the web Worker serves
+  // the pages and assets and calls this Worker only over its service binding.
+  // The owner check still runs first, so anonymous requests get 401.
+  const rest = ownerApp(scopeOf);
+  rest.all("/*", notFound);
 
   const aot = codeGenerationAllowed();
   return new Elysia({
@@ -62,6 +63,6 @@ export function createApp(scopeOf: ScopeResolver) {
     .onError(({ error }) => errorResponse(error))
     .use(open)
     .use(api)
-    .use(web)
+    .use(rest)
     .compile();
 }

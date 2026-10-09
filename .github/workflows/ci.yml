@@ -42,7 +42,7 @@ jobs:
     needs: check
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     environment: saldo-production
     concurrency:
       group: saldo-production
@@ -85,7 +85,9 @@ jobs:
           SALDO_OWNER_SUB: ${{ secrets.SALDO_OWNER_SUB }}
         run: pnpm run build
       - name: Validate the release Build Output with cf, without credentials
-        run: pnpm run deploy:check
+        # cf prints var values (ACCESS_AUD cut to a prefix GitHub cannot mask).
+        shell: bash
+        run: pnpm run deploy:check 2>&1 | sed -E '/Environment Variable/ s/(env\.[A-Za-z0-9_]+) \(.*\)/\1 (value hidden)/'
       - name: Smoke-test the bridge image that will be deployed
         run: node scripts/ci/smoke-image.ts
       - name: Verify Build Output, live private settings and D1 recovery point
@@ -98,20 +100,29 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: node scripts/ci/deployment.ts migrate
-      - name: Deploy the private bridge and Container
+      - name: Deploy the private bridge and Container if changed
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: node scripts/ci/deployment.ts deploy bridge
-      - name: Deploy the app without changing domain routes
+      - name: Deploy the API Worker, which has no public route
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: node scripts/ci/deployment.ts deploy app
-      - name: Verify preserved settings and anonymous access denial
+        run: node scripts/ci/deployment.ts deploy api
+      - name: Deploy the web Worker without changing domain routes
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: node scripts/ci/deployment.ts deploy web
+      - name: Smoke-check bindings, private endpoints and anonymous access
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           SALDO_ACCESS_AUD: ${{ secrets.SALDO_ACCESS_AUD }}
           SALDO_OWNER_SUB: ${{ secrets.SALDO_OWNER_SUB }}
         run: node scripts/ci/deployment.ts verify
+      - name: Record the commit and each Worker's version
+        if: always()
+        env:
+          SALDO_JOB_STATUS: ${{ job.status }}
+        run: node scripts/ci/deployment.ts record
       - name: Remove ephemeral private state
         if: always()
-        run: rm -f "$RUNNER_TEMP/saldo-production-snapshot.json"
+        run: rm -f "$RUNNER_TEMP/saldo-production-snapshot.json" "$RUNNER_TEMP/saldo-release.json"

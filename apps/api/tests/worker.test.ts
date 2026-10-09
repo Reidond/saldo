@@ -1,7 +1,7 @@
 import { it, expect } from "vite-plus/test";
 import worker, { type Env } from "../src/worker";
 const env = { APP_ORIGIN: "https://saldo.test" } as Env;
-it("never serves assets or personal API without configured identity", async () => {
+it("never answers a page or personal API without configured identity", async () => {
   for (const path of ["/", "/api/subscriptions", "/api/chat"])
     expect(
       (await worker.fetch(new Request(`https://saldo.test${path}`), env))

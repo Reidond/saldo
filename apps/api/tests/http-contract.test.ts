@@ -1,5 +1,5 @@
-// End-to-end HTTP contract of the app Worker: real local D1, synthetic Access
-// keys and fake ASSETS and AI bindings. The web client depends on every
+// End-to-end HTTP contract of the API Worker: real local D1, synthetic Access
+// keys and a fake AI binding. The web client depends on every
 // status code, message and header asserted here; change them deliberately.
 import {
   afterAll,
@@ -25,8 +25,6 @@ const privateMessage =
   "Private Saldo instance. Configure Cloudflare Access and sign in as the owner.";
 const genericMessage =
   "Invalid data or unavailable storage. No unreviewed changes were saved.";
-const csp =
-  "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'";
 const streaming = {
   name: "Example Streaming",
   amount: 9.99,
@@ -43,7 +41,6 @@ const music = { ...streaming, name: "Example Music", amount: 4.5 };
 let d1: LocalD1;
 let keys: AccessKeys;
 let owner: string;
-let assets: ReturnType<typeof fakeFetcher>;
 let bridge: ReturnType<typeof fakeFetcher>;
 
 function fakeFetcher(
@@ -64,7 +61,6 @@ function env(overrides: Partial<Env> = {}): Env {
   return {
     DB: d1.db,
     FILES: {} as R2Bucket,
-    ASSETS: assets as unknown as Fetcher,
     APP_ORIGIN: origin,
     ACCESS_TEAM_DOMAIN: accessSettings.teamDomain,
     ACCESS_AUD: accessSettings.audience,
@@ -140,15 +136,6 @@ afterAll(async () => {
 });
 beforeEach(async () => {
   await d1.reset();
-  assets = fakeFetcher(
-    () =>
-      new Response("<!doctype html><title>Saldo</title>", {
-        headers: {
-          "Content-Type": "text/html; charset=utf-8",
-          "Cache-Control": "public, max-age=3600",
-        },
-      }),
-  );
   bridge = fakeFetcher(() => Response.json({ connected: true }));
 });
 afterEach(() => vi.clearAllMocks());
@@ -171,7 +158,6 @@ describe("cross-origin protection", () => {
         expect(await body(response)).toEqual({ error: "Origin not allowed" });
       }
     }
-    expect(assets.fetch).not.toHaveBeenCalled();
   });
 
   it("lets safe methods through without an Origin header", async () => {
@@ -236,7 +222,7 @@ describe("GET /api/status", () => {
 });
 
 describe("owner authentication", () => {
-  it("fails closed for assets and API without a valid owner token", async () => {
+  it("fails closed for every path without a valid owner token", async () => {
     const tokens = [
       null,
       "forged",
@@ -264,7 +250,6 @@ describe("owner authentication", () => {
         expectJsonHeaders(response);
         expect(await body(response)).toEqual({ error: privateMessage });
       }
-    expect(assets.fetch).not.toHaveBeenCalled();
     expect(await stored()).toEqual([]);
   });
 
@@ -283,29 +268,14 @@ describe("owner authentication", () => {
   });
 });
 
-describe("protected static assets", () => {
-  it("serves the web build only to the owner with strict headers", async () => {
-    const response = await call("/settings?tab=ai");
-    expect(response.status).toBe(200);
-    expect(await response.text()).toBe("<!doctype html><title>Saldo</title>");
-    expect(response.headers.get("Content-Type")).toBe(
-      "text/html; charset=utf-8",
-    );
-    expect(response.headers.get("Content-Security-Policy")).toBe(csp);
-    expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
-    expect(response.headers.get("Referrer-Policy")).toBe("no-referrer");
-    expect(response.headers.get("Cache-Control")).toBe("private, no-store");
-    expect(assets.calls[0].url).toBe(`${origin}/settings?tab=ai`);
-  });
-
-  it("passes asset status codes through and treats /api without a slash as an asset", async () => {
-    assets = fakeFetcher(() => new Response("missing", { status: 404 }));
-    expect((await call("/missing.js")).status).toBe(404);
-    expect((await call("/api")).status).toBe(404);
-    expect(assets.calls.map((r) => new URL(r.url).pathname)).toEqual([
-      "/missing.js",
-      "/api",
-    ]);
+describe("no pages or static assets", () => {
+  it("answers 404 to the owner for every path outside /api/", async () => {
+    for (const path of ["/", "/settings?tab=ai", "/index.html", "/api"]) {
+      const response = await call(path);
+      expect(response.status).toBe(404);
+      expectJsonHeaders(response);
+      expect(await body(response)).toEqual({ error: "Not found" });
+    }
   });
 });
 
@@ -747,7 +717,7 @@ describe("GET /api/me and Access login", () => {
     expect((await users()).results).toHaveLength(1);
   });
 
-  it("does not create users for status checks or assets", async () => {
+  it("does not create users for status checks or paths outside the API", async () => {
     await call("/api/status");
     await call("/");
     expect((await users()).results).toEqual([]);

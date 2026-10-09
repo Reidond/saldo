@@ -6,8 +6,6 @@ import { UnauthenticatedError } from "./errors";
 export interface RequestScope {
   services: Services;
   appOrigin: string;
-  /** The protected web build. */
-  assets: Pick<Fetcher, "fetch">;
 }
 
 /** Supplied by the composition root; tests pass fakes. */
