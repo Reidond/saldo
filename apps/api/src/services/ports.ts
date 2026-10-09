@@ -27,7 +27,8 @@ export interface AccessTokenClaims {
 export interface AccessTokenVerifier {
   /**
    * Checks the signature against the team's JWKS, the issuer
-   * (https://<teamDomain>), the audience and the expiry. Throws if any fails.
+   * (https://<teamDomain>), the audience, the expiry and that it is an
+   * application token (`type: "app"`). Throws if any fails.
    */
   verify(
     token: string,

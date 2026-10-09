@@ -41,6 +41,7 @@ const meSchema = z
     }),
   })
   .transform((v): Me => v.user);
+const signedOutSchema = z.object({ signedOut: z.literal(true) });
 const listSchema = z.object({ subscriptions: z.array(subscriptionSchema) });
 const oneSchema = z.object({ subscription: subscriptionSchema });
 const deletedSchema = z.object({ deleted: z.literal(true) });
@@ -106,6 +107,9 @@ export function createBindingApiClient(
   return {
     status: () => call("GET", "/api/status", statusSchema),
     me: () => call("GET", "/api/me", meSchema),
+    signOut: async () => {
+      await call("POST", "/api/session/sign-out", signedOutSchema);
+    },
     listSubscriptions: async () =>
       (await call("GET", "/api/subscriptions", listSchema)).subscriptions,
     createSubscription: async (input: SubscriptionInput) =>

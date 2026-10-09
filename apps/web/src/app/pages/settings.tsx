@@ -3,7 +3,7 @@ import { currencyOptions, localeOptions } from "../../lib/preferences";
 import { savePreferences } from "../../server/actions";
 import { getRequestContext } from "../../server/context";
 import { PreferencesForm } from "../client/preferences-form";
-import { SIGN_OUT_HREF } from "../routes";
+import { SignOutLink } from "../client/sign-out-link";
 import {
   Card,
   CardHeader,
@@ -65,13 +65,10 @@ export async function SettingsPage() {
             )}
             <p className="mt-4 text-sm text-ink-muted">
               Sign-in is managed by Cloudflare Access; there is no separate
-              Saldo password. Signing out ends your session for every app behind
-              the same Access team.
+              Saldo password. Signing out ends your Saldo session at once and
+              your session for every app behind the same Access team.
             </p>
-            <a
-              href={SIGN_OUT_HREF}
-              className={`${buttonClass({ icon: "leading" })} mt-4`}
-            >
+            <SignOutLink className={`${buttonClass({ icon: "leading" })} mt-4`}>
               <LogOut
                 className="size-4.5"
                 absoluteStrokeWidth
@@ -79,7 +76,7 @@ export async function SettingsPage() {
                 aria-hidden="true"
               />
               Sign out
-            </a>
+            </SignOutLink>
           </div>
         </Card>
 

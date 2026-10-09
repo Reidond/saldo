@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { useNavigation } from "../../framework/navigation";
+import { useUnsavedWork } from "../../framework/session";
 import type { SubscriptionFormValues } from "../../lib/subscription-form";
 import { cadenceLabels, statusLabels } from "../../lib/subscriptions";
 import type { SaveSubscriptionState } from "../../server/actions";
@@ -48,11 +49,19 @@ export function SubscriptionForm({
 }: SubscriptionFormProps) {
   const { navigate } = useNavigation();
   const [state, formAction, pending] = useActionState(save, { status: "idle" });
-  const [values, setValues] = useState({
+  const [loaded] = useState(() => ({
     ...initial,
     amount: initial.amount === null ? "" : String(initial.amount),
     renewalDate: initial.renewalDate ?? "",
-  });
+  }));
+  const [values, setValues] = useState(loaded);
+  // Typed changes survive an expired session (src/framework/session.ts).
+  useUnsavedWork(
+    state.status !== "saved" &&
+      (Object.keys(loaded) as (keyof typeof loaded)[]).some(
+        (key) => values[key] !== loaded[key],
+      ),
+  );
   const formId = useId();
   const errors = state.status === "error" ? state.fieldErrors : {};
 

@@ -23,11 +23,19 @@ import { Chat } from "../src/app/client/chat";
 import { draftsStore } from "../src/app/client/drafts-store";
 import type { SaveProposal } from "../src/app/client/review-card";
 import { CsvImport, DraftInbox } from "../src/app/client/review-inbox";
+import { SessionNotice } from "../src/app/client/session-notice";
+import { SignOutLink } from "../src/app/client/sign-out-link";
 import { SubscriptionForm } from "../src/app/client/subscription-form";
 import {
   NavigationContext,
   type Navigation,
 } from "../src/framework/navigation";
+import {
+  hasUnsavedWork,
+  isSessionEnded,
+  resumeAfterSignIn,
+  waitForSignIn,
+} from "../src/framework/session";
 import type {
   ProposalResult,
   SaveSubscriptionState,
@@ -410,5 +418,210 @@ describe("chat", () => {
       attachments: [],
       history: [],
     });
+  });
+});
+
+describe("expired sessions", () => {
+  const blank = {
+    name: "",
+    amount: null,
+    currency: "USD",
+    cadence: "monthly" as const,
+    renewalDate: null,
+    status: "active" as const,
+    category: "Other",
+    source: "",
+    lastVerified: null,
+    notes: "",
+  };
+  afterEach(() => act(() => resumeAfterSignIn()));
+
+  it("recognises Access and gate refusals: 401 and opaque redirects", () => {
+    expect(isSessionEnded(new Response(null, { status: 401 }))).toBe(true);
+    expect(
+      isSessionEnded({ status: 0, type: "opaqueredirect" } as Response),
+    ).toBe(true);
+    expect(isSessionEnded(new Response(null, { status: 403 }))).toBe(false);
+    expect(isSessionEnded(new Response("ok"))).toBe(false);
+  });
+
+  it("holds refused requests until the owner signs in again", async () => {
+    render(<SessionNotice />);
+    expect(screen.queryByRole("alert")).toBeNull();
+    let resumed = 0;
+    const waiting = [waitForSignIn(), waitForSignIn()].map((p) =>
+      p.then(() => resumed++),
+    );
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain(
+      "Your session expired. Reload to sign in again.",
+    );
+    const newTab = within(alert).getByRole("link", {
+      name: "Sign in in a new tab",
+    });
+    expect(newTab.getAttribute("target")).toBe("_blank");
+    expect(newTab.getAttribute("href")).toBe("/");
+    expect(resumed).toBe(0);
+    await userEvent.click(
+      within(alert).getByRole("button", { name: "Try again" }),
+    );
+    await Promise.all(waiting);
+    expect(resumed).toBe(2);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("counts conversations, undecided drafts and typed values as unsaved work", async () => {
+    expect(hasUnsavedWork()).toBe(false);
+    const id = draftsStore.startConversation();
+    expect(hasUnsavedWork()).toBe(false);
+    draftsStore.appendMessage(id, {
+      id: "m1",
+      role: "user",
+      text: "Synthetic",
+    });
+    expect(hasUnsavedWork()).toBe(true);
+    draftsStore.reset();
+    draftsStore.addDrafts([{ ...saved[0], operation: "add" }], {
+      kind: "csv",
+      file: "synthetic.csv",
+    });
+    expect(hasUnsavedWork()).toBe(true);
+    draftsStore.reset();
+    expect(hasUnsavedWork()).toBe(false);
+    renderWithNavigation(
+      <SubscriptionForm
+        initial={blank}
+        categories={["Other"]}
+        lastVerifiedLabel={null}
+        cancelHref="/subscriptions"
+        save={vi.fn()}
+      />,
+    );
+    expect(hasUnsavedWork()).toBe(false);
+    await userEvent.type(screen.getByLabelText("Name"), "Synthetic Work");
+    expect(hasUnsavedWork()).toBe(true);
+    cleanup();
+    expect(hasUnsavedWork()).toBe(false);
+  });
+
+  it("keeps a form and its typed values while a save waits for sign-in", async () => {
+    // What the browser entry does when the gate refuses a server action:
+    // the action waits for sign-in, then is sent again and completes.
+    const save = vi.fn(async (): Promise<SaveSubscriptionState> => {
+      await waitForSignIn();
+      return { status: "saved", id: "new-id", name: "Synthetic Work" };
+    });
+    renderWithNavigation(
+      <>
+        <SessionNotice />
+        <SubscriptionForm
+          initial={blank}
+          categories={["Other"]}
+          lastVerifiedLabel={null}
+          cancelHref="/subscriptions"
+          save={save}
+        />
+      </>,
+    );
+    await userEvent.type(screen.getByLabelText("Name"), "Synthetic Work");
+    await userEvent.click(
+      screen.getByRole("button", { name: "Add subscription" }),
+    );
+    const alert = await screen.findByRole("alert");
+    expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe(
+      "Synthetic Work",
+    );
+    expect(navigate).not.toHaveBeenCalled();
+    await userEvent.click(
+      within(alert).getByRole("button", { name: "Try again" }),
+    );
+    await waitFor(() =>
+      expect(navigate).toHaveBeenCalledWith("/subscriptions/new-id?saved=1", {
+        replace: true,
+        scroll: true,
+      }),
+    );
+    expect(save).toHaveBeenCalledOnce();
+  });
+
+  it("puts a chat message back and shows the notice when Access refuses it", async () => {
+    for (const refused of [
+      new Response("<!doctype html>", { status: 401 }),
+      { status: 0, ok: false, type: "opaqueredirect" } as Response,
+    ]) {
+      const fetchSpy = vi.fn(async () => refused);
+      vi.stubGlobal("fetch", fetchSpy);
+      renderWithNavigation(
+        <>
+          <SessionNotice />
+          <Chat
+            aiAvailable
+            subscriptions={saved}
+            locale="en-US"
+            save={vi.fn()}
+          />
+        </>,
+      );
+      await userEvent.type(
+        screen.getByLabelText("Message Saldo"),
+        "Add Synthetic Notes",
+      );
+      await userEvent.click(
+        screen.getByRole("button", { name: "Send for review" }),
+      );
+      await waitFor(() => expect(fetchSpy).toHaveBeenCalledOnce());
+      const [, init] = fetchSpy.mock.calls[0] as unknown as [
+        string,
+        RequestInit,
+      ];
+      expect(init.redirect).toBe("manual");
+      const alerts = await screen.findAllByRole("alert");
+      expect(alerts.map((a) => a.textContent).join(" ")).toContain(
+        "Your session expired. Reload to sign in again.",
+      );
+      expect(
+        (screen.getByLabelText("Message Saldo") as HTMLTextAreaElement).value,
+      ).toBe("Add Synthetic Notes");
+      expect(hasUnsavedWork()).toBe(true);
+      cleanup();
+      act(() => resumeAfterSignIn());
+      draftsStore.reset();
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("sign-out", () => {
+  it("ends the Saldo session, then goes to the Access logout even if that failed", async () => {
+    for (const answer of [
+      () => Promise.resolve(Response.json({ signedOut: true })),
+      () => Promise.resolve(new Response(null, { status: 401 })),
+      () => Promise.reject(new TypeError("offline")),
+    ]) {
+      const assign = vi.fn();
+      vi.stubGlobal("location", { href: window.location.href, assign });
+      const fetchSpy = vi.fn(answer);
+      vi.stubGlobal("fetch", fetchSpy);
+      render(
+        <SignOutLink label="Sign out">
+          <span>Sign out</span>
+        </SignOutLink>,
+      );
+      const link = screen.getByRole("link", { name: "Sign out" });
+      expect(link.getAttribute("href")).toBe("/cdn-cgi/access/logout");
+      await userEvent.click(link);
+      await waitFor(() =>
+        expect(assign).toHaveBeenCalledWith("/cdn-cgi/access/logout"),
+      );
+      expect(fetchSpy).toHaveBeenCalledOnce();
+      const [url, init] = fetchSpy.mock.calls[0] as unknown as [
+        string,
+        RequestInit,
+      ];
+      expect(url).toBe("/session/sign-out");
+      expect(init.method).toBe("POST");
+      cleanup();
+      vi.unstubAllGlobals();
+    }
   });
 });

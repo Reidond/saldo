@@ -37,3 +37,16 @@ export function touchUserIdentityStatement(
       identity.subject,
     );
 }
+
+/** The identity most recently linked to a user, or null if it has none. */
+export async function findLatestUserIdentity(
+  db: D1Database,
+  userId: string,
+): Promise<IdentityKey | null> {
+  return db
+    .prepare(
+      "SELECT provider, issuer, subject FROM user_identities WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+    )
+    .bind(userId)
+    .first<IdentityKey>();
+}

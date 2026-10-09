@@ -8,6 +8,20 @@ const pages = {
     body: "Sign in through Cloudflare Access as the owner to continue. If you just signed in, reload the page.",
     action: '<a href="/">Reload</a>',
   },
+  "session-ended": {
+    title: "Signed out of Saldo",
+    heading: "Your Saldo session has ended.",
+    body: "You signed out, or your session expired. Reload to sign in again through Cloudflare Access. If this page comes back, sign out of Cloudflare Access, then open Saldo again. Nothing was shown or changed.",
+    action:
+      '<a href="/">Reload</a> &nbsp;·&nbsp; <a href="/cdn-cgi/access/logout">Sign out of Cloudflare Access</a>',
+  },
+  denied: {
+    title: "Access refused",
+    heading: "This account can’t open this Saldo workspace.",
+    body: "Cloudflare Access signed you in, but Saldo refused this account. Nothing was shown or changed.",
+    action:
+      '<a href="/cdn-cgi/access/logout">Sign out of Cloudflare Access</a>',
+  },
   unconfigured: {
     title: "Saldo is not available",
     heading: "Saldo isn’t configured yet.",

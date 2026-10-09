@@ -15,7 +15,12 @@ export function remoteAccessKeys(teamDomain: string): JWTVerifyGetKey {
   return keys;
 }
 
-/** Verifies Cf-Access-Jwt-Assertion tokens with jose. */
+/**
+ * Verifies Cf-Access-Jwt-Assertion tokens with jose, accepting exactly what
+ * the web Worker's gate accepts (apps/web/src/server/access.ts): RS256 from
+ * the team's keys, issuer, audience, `exp` and `iat` with 5 seconds of skew,
+ * a non-empty `sub` (service tokens have none) and `type: "app"`.
+ */
 export function createAccessTokenVerifier(
   keysFor: (teamDomain: string) => JWTVerifyGetKey = remoteAccessKeys,
 ): AccessTokenVerifier {
@@ -27,9 +32,12 @@ export function createAccessTokenVerifier(
         audience,
         algorithms: ["RS256"],
         requiredClaims: ["sub", "exp", "iat"],
+        clockTolerance: 5,
       });
       if (!payload.sub || typeof payload.iat !== "number")
         throw new Error("Access token has no subject");
+      if (payload.type !== "app")
+        throw new Error("Not a Cloudflare Access application token");
       return {
         issuer,
         subject: payload.sub,

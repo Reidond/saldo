@@ -23,8 +23,10 @@ import {
   type Navigation,
 } from "./navigation";
 import { createRscRenderRequest, isRscResponse } from "./request";
+import { hasUnsavedWork, isSessionEnded, waitForSignIn } from "./session";
 
-const SESSION_EXPIRED = "Your session expired. Reload to sign in again.";
+const ACTION_FAILED =
+  "Saldo couldn’t complete that request. Nothing was changed. Try again.";
 
 let showPayload: (
   next: Promise<RscPayload>,
@@ -32,16 +34,22 @@ let showPayload: (
 ) => void = () => {};
 
 async function fetchPayload(href: string) {
-  const response = await fetch(createRscRenderRequest(href));
-  // Access answers an expired session with a redirect or 401, not RSC.
-  if (!isRscResponse(response)) throw new Error(SESSION_EXPIRED);
+  let response = await fetch(createRscRenderRequest(href));
+  // An ended session would make the full page load below throw away this
+  // tab's unsaved work, so wait on this page until the owner signs in again.
+  while (isSessionEnded(response) && hasUnsavedWork()) {
+    await waitForSignIn();
+    response = await fetch(createRscRenderRequest(href));
+  }
+  if (!isRscResponse(response)) throw new Error("Not a page payload");
   return createFromFetch<RscPayload>(Promise.resolve(response));
 }
 
 function load(href: string, scroll: boolean) {
   showPayload(
     fetchPayload(href).catch(() => {
-      // A full page load lets Access show its sign-in page; stay pending.
+      // A full page load shows what the server or Access answers, including
+      // Access's sign-in page for an ended session; stay pending meanwhile.
       window.location.assign(href);
       return new Promise<never>(() => {});
     }),
@@ -91,15 +99,28 @@ function scrollToHashOrTop() {
 
 let applyActionPayload: (payload: RscPayload) => void = () => {};
 
+async function sendAction(id: string, args: unknown[]) {
+  for (;;) {
+    const temporaryReferences = createTemporaryReferenceSet();
+    const response = await fetch(
+      createRscRenderRequest(window.location.href, {
+        id,
+        body: await encodeReply(args, { temporaryReferences }),
+      }),
+    );
+    // Refused before the action ran: keep the caller (and its form or
+    // draft) waiting until the owner signs in again, then send it again.
+    if (isSessionEnded(response)) {
+      await waitForSignIn();
+      continue;
+    }
+    if (!isRscResponse(response)) throw new Error(ACTION_FAILED);
+    return { response, temporaryReferences };
+  }
+}
+
 setServerCallback(async (id, args) => {
-  const temporaryReferences = createTemporaryReferenceSet();
-  const response = await fetch(
-    createRscRenderRequest(window.location.href, {
-      id,
-      body: await encodeReply(args, { temporaryReferences }),
-    }),
-  );
-  if (!isRscResponse(response)) throw new Error(SESSION_EXPIRED);
+  const { response, temporaryReferences } = await sendAction(id, args);
   const payload = await createFromFetch<RscPayload>(Promise.resolve(response), {
     temporaryReferences,
   });

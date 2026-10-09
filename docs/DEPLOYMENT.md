@@ -80,6 +80,34 @@ cd apps/bridge && pnpm exec cf workers secrets bulk --worker saldo-ai-bridge --f
 
 A release never sets or removes secrets, and the next deploy keeps them. (If the [ChatGPT plan](plans/chatgpt-connect-and-login.md) retires the bridge first, the secret goes with it instead.)
 
+## Owner identity handover
+
+Saldo links the owner's Access identity (team domain and subject) the first time they sign in. If the subject changes (the owner was removed and re-added in Zero Trust) or the team domain changes, the new identity is refused with 403 ("This account can’t open this Saldo workspace"): it never takes over the owner's account by itself. To hand the account over:
+
+1. Change `SALDO_OWNER_SUB` (or `SALDO_ACCESS_TEAM_DOMAIN`) in the Environment and on the live Workers together (see [Release settings](#release-settings)).
+2. Set the optional `OWNER_HANDOVER_FROM` secret on `saldo-api` to the previous `OWNER_SUB` (the same value for a team-domain change). It is a secret only because `cf deploy` keeps secrets and drops undeclared vars; it holds no secret value.
+
+   ```json
+   {
+     "secrets": {
+       "OWNER_HANDOVER_FROM": {
+         "name": "OWNER_HANDOVER_FROM",
+         "type": "secret_text",
+         "text": "<previous subject>"
+       }
+     }
+   }
+   ```
+
+   ```sh
+   cd apps/api && pnpm exec cf workers secrets bulk --worker saldo-api --file /private/path/handover.json
+   ```
+
+3. Sign in once. Saldo links the new identity to the existing owner and records `identity.handover` in `audit_events`.
+4. Delete the secret with the same command and `{"secrets": {"OWNER_HANDOVER_FROM": null}}`.
+
+A handover is accepted only from the owner's most recently linked identity, so a leftover value cannot move the account again; delete it anyway. Details: [apps/api/README.md](../apps/api/README.md#owner-identity-handover).
+
 ## GitHub Actions delivery
 
 The `Check and deploy Saldo` workflow checks every pull request and deploys after successful checks on `main` (also on manual dispatch from `main`).

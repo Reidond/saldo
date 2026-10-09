@@ -122,6 +122,16 @@ export function fakeRepositories(db: FakeDatabase): Repositories {
         s.reviews.add(key(accountId, requestId));
       }),
     findUserByIdentity: async (_, identity) => userWithIdentity(identity),
+    findLatestUserIdentity: async (_, userId) => {
+      // Map order is insertion order, like rowid order in D1.
+      const keys = [...db.state.identities]
+        .filter(([, link]) => link.userId === userId)
+        .map(([k]) => k);
+      const latest = keys.at(-1);
+      if (!latest) return null;
+      const [provider, issuer, subject] = latest.split("\u0000");
+      return { provider: provider as IdentityKey["provider"], issuer, subject };
+    },
     findOwnerUser: async () =>
       [...db.state.users.values()].find((u) => u.role === "owner") ?? null,
     insertUserStatement: (_, user) =>
@@ -142,6 +152,15 @@ export function fakeRepositories(db: FakeDatabase): Repositories {
             email: profile.email,
             displayName: profile.displayName,
           });
+      }),
+    updateUserSessionsValidAfterStatement: (_, change) =>
+      db.statement((s) => {
+        const user = s.users.get(change.id);
+        if (user?.accountId === change.accountId)
+          user.sessionsValidAfter = Math.max(
+            user.sessionsValidAfter,
+            change.sessionsValidAfter,
+          );
       }),
     insertUserIdentityStatement: (_, identity) =>
       db.statement((s) => {

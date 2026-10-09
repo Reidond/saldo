@@ -23,6 +23,12 @@ import {
   type DragEvent,
   type KeyboardEvent,
 } from "react";
+import {
+  isSessionEnded,
+  markSessionExpired,
+  SESSION_EXPIRED_MESSAGE,
+  useUnsavedWork,
+} from "../../framework/session";
 import { formatBytes } from "../../lib/format";
 import { Notice } from "../ui/components";
 import { buttonClass, cx } from "../ui/styles";
@@ -74,6 +80,7 @@ export function Chat({ aiAvailable, subscriptions, locale, save }: ChatProps) {
   const [message, setMessage] = useState("");
   const [attachments, setAttachments] = useState<PendingAttachment[]>([]);
   const [sending, setSending] = useState<Sending | null>(null);
+  useUnsavedWork(message.trim() !== "" || attachments.length > 0);
   const [error, setError] = useState("");
   const controller = useRef<AbortController | null>(null);
   const sendLock = useRef(false);
@@ -178,7 +185,12 @@ export function Chat({ aiAvailable, subscriptions, locale, save }: ChatProps) {
           history,
         }),
         signal: request.signal,
+        redirect: "manual",
       });
+      if (isSessionEnded(response)) {
+        markSessionExpired();
+        throw new Error(SESSION_EXPIRED_MESSAGE);
+      }
       const body = (await response.json().catch(() => null)) as {
         reply?: unknown;
         proposals?: unknown;
@@ -186,11 +198,9 @@ export function Chat({ aiAvailable, subscriptions, locale, save }: ChatProps) {
       } | null;
       if (!response.ok)
         throw new Error(
-          response.status === 401
-            ? "Your session expired. Reload to sign in again."
-            : typeof body?.error === "string"
-              ? body.error
-              : "ChatGPT could not complete this request. Nothing was saved.",
+          typeof body?.error === "string"
+            ? body.error
+            : "ChatGPT could not complete this request. Nothing was saved.",
         );
       const proposals = proposalSchema
         .array()

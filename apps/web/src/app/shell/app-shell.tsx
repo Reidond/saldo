@@ -14,7 +14,9 @@ import { isApiError, type Me } from "../../server/api";
 import { getRequestContext } from "../../server/context";
 import { AccountMenu } from "../client/account-menu";
 import { NavigationProgress } from "../client/navigation-progress";
-import { SIGN_OUT_HREF, type Section } from "../routes";
+import { SessionNotice } from "../client/session-notice";
+import { SignOutLink } from "../client/sign-out-link";
+import type { Section } from "../routes";
 import { Initial, Logo, Pill } from "../ui/components";
 import { cx } from "../ui/styles";
 
@@ -53,6 +55,7 @@ export function AppShell({
   return (
     <div className="min-h-svh lg:ps-64">
       <NavigationProgress />
+      <SessionNotice />
       <a
         href="#main"
         className="sr-only z-50 rounded-lg bg-surface px-3 py-2 shadow-pop focus:not-sr-only focus:fixed focus:top-3 focus:left-3"
@@ -267,9 +270,8 @@ async function AccountBlock() {
           {me?.email && me.displayName ? me.email : "Signed in with Access"}
         </p>
       </div>
-      <a
-        href={SIGN_OUT_HREF}
-        aria-label="Sign out"
+      <SignOutLink
+        label="Sign out"
         title="Sign out of Saldo and other Access apps"
         className="grid size-9 place-items-center rounded-lg text-ink-muted transition-[background-color,color] duration-150 ease-out hover:bg-surface-hover hover:text-ink"
       >
@@ -279,7 +281,7 @@ async function AccountBlock() {
           strokeWidth={1.5}
           aria-hidden="true"
         />
-      </a>
+      </SignOutLink>
     </div>
   );
 }

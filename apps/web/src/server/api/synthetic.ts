@@ -26,6 +26,8 @@ export interface SyntheticOptions {
   aiDelayMs?: number;
   /** Every data call fails as if the API Worker were unreachable. */
   down?: boolean;
+  /** The API refuses the session, as after a sign-out. */
+  signedOut?: boolean;
 }
 
 export function createSyntheticApiClient(
@@ -67,6 +69,7 @@ export function createSyntheticApiClient(
         role: "owner",
       };
     },
+    async signOut() {},
     async listSubscriptions() {
       return structuredClone(items);
     },
@@ -111,6 +114,21 @@ export function createSyntheticApiClient(
       return syntheticReply(input, items);
     },
   };
+  if (options.signedOut) {
+    const refused = () =>
+      Promise.reject(new ApiError("unauthenticated", undefined, 401));
+    return {
+      ...client,
+      me: refused,
+      signOut: refused,
+      listSubscriptions: refused,
+      createSubscription: refused,
+      updateSubscription: refused,
+      deleteSubscription: refused,
+      saveReview: refused,
+      chat: refused,
+    };
+  }
   if (!options.down) return client;
   const unavailable = () =>
     Promise.reject(new ApiError("unavailable", undefined, 503));

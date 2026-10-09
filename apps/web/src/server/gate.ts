@@ -1,8 +1,9 @@
 import "server-only";
 import type { JWTVerifyGetKey } from "jose";
+import { SIGN_OUT_HREF } from "../app/routes";
 import { readPreferences } from "../lib/preferences";
 import { verifyAccess } from "./access";
-import { apiClientFor } from "./api";
+import { apiClientFor, isApiError } from "./api";
 import { resolveConfig, type WebEnv } from "./config";
 import {
   createRequestContext,
@@ -12,6 +13,7 @@ import {
 import { isAssetPath, serveAsset } from "./http";
 import { handleChat } from "./routes/chat";
 import { handleExport } from "./routes/export";
+import { handleSignOut } from "./routes/session";
 import { staticPage } from "./static-pages";
 
 export type GateResult =
@@ -50,6 +52,10 @@ export async function gate(
     assertion = identity.assertion;
   }
   const url = new URL(request.url);
+  // In production Cloudflare answers /cdn-cgi/ itself; the dev server shows
+  // what a signed-out visitor would see.
+  if (config.mode === "synthetic" && url.pathname === SIGN_OUT_HREF)
+    return { kind: "response", response: staticPage("signed-out", 401) };
   if (
     config.assets &&
     isAssetPath(url.pathname) &&
@@ -83,5 +89,34 @@ export async function gate(
       kind: "response",
       response: await runWithContext(context, () => handleExport(request, url)),
     };
+  if (url.pathname === "/session/sign-out")
+    return {
+      kind: "response",
+      response: await runWithContext(context, () =>
+        handleSignOut(request, origin),
+      ),
+    };
+  const refused = await refusedSession(context);
+  if (refused) return { kind: "response", response: refused };
   return { kind: "render", context, origin };
+}
+
+/**
+ * Pages and server actions run only for a session the API accepts. A token
+ * that verifies here can still be refused there (signed out, disabled): that
+ * gets one static page instead of a shell rendered around failed reads, and
+ * a server action never runs. Other failures (the API is down) render, and
+ * each page shows its own error state.
+ */
+async function refusedSession(context: RequestContext) {
+  try {
+    await context.load.me();
+    return null;
+  } catch (error) {
+    if (!isApiError(error)) return null;
+    if (error.code === "unauthenticated")
+      return staticPage("session-ended", 401);
+    if (error.code === "forbidden") return staticPage("denied", 403);
+    return null;
+  }
 }

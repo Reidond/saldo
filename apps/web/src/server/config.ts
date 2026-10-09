@@ -11,7 +11,7 @@ export interface WebEnv {
   /** Development and tests only: `synthetic` serves fictional data. */
   SALDO_DATA_SOURCE?: string;
   SALDO_SYNTHETIC_AI?: string;
-  /** Development only: `empty` or `api-down`, to check those states. */
+  /** Development only: `empty`, `api-down` or `signed-out`, to check those states. */
   SALDO_SYNTHETIC_SCENARIO?: string;
 }
 
@@ -32,7 +32,7 @@ export type WebConfig =
       mode: "synthetic";
       assets?: ServiceFetcher;
       ai: "available" | "unavailable";
-      scenario: "sample" | "empty" | "api-down";
+      scenario: "sample" | "empty" | "api-down" | "signed-out";
     };
 
 export type ConfigResult =
@@ -67,7 +67,8 @@ export function resolveConfig(
           env.SALDO_SYNTHETIC_AI === "available" ? "available" : "unavailable",
         scenario:
           env.SALDO_SYNTHETIC_SCENARIO === "empty" ||
-          env.SALDO_SYNTHETIC_SCENARIO === "api-down"
+          env.SALDO_SYNTHETIC_SCENARIO === "api-down" ||
+          env.SALDO_SYNTHETIC_SCENARIO === "signed-out"
             ? env.SALDO_SYNTHETIC_SCENARIO
             : "sample",
       },
