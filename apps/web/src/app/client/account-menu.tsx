@@ -1,9 +1,9 @@
 "use client";
 import { LogOut, Settings2 } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
-import { SIGN_OUT_HREF } from "../routes";
 import { Initial } from "../ui/components";
 import { cx } from "../ui/styles";
+import { SignOutLink } from "./sign-out-link";
 
 /** The account popover in the phone top bar. */
 export function AccountMenu({
@@ -76,10 +76,7 @@ export function AccountMenu({
           />
           Settings
         </a>
-        <a
-          href={SIGN_OUT_HREF}
-          className="flex h-11 items-center gap-2.5 rounded-lg px-2.5 text-sm hover:bg-surface-hover"
-        >
+        <SignOutLink className="flex h-11 items-center gap-2.5 rounded-lg px-2.5 text-sm hover:bg-surface-hover">
           <LogOut
             className="size-4.5 text-ink-muted"
             absoluteStrokeWidth
@@ -87,7 +84,7 @@ export function AccountMenu({
             aria-hidden="true"
           />
           Sign out
-        </a>
+        </SignOutLink>
       </div>
     </div>
   );

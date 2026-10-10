@@ -1,5 +1,6 @@
 import type { Proposal } from "@saldo/domain";
 import { useSyncExternalStore } from "react";
+import { registerUnsavedWork } from "../../framework/session";
 
 /*
  * Unsaved work lives only in this browser tab: chat conversations and the
@@ -58,6 +59,14 @@ const empty: DraftsSnapshot = {
 
 let snapshot: DraftsSnapshot = empty;
 const listeners = new Set<() => void>();
+
+// Conversations and undecided drafts exist only in this tab, so an expired
+// session must not reload it away (src/framework/session.ts).
+registerUnsavedWork(
+  () =>
+    snapshot.conversations.some((c) => c.messages.length > 0) ||
+    snapshot.drafts.some((d) => d.state === "pending" || d.state === "error"),
+);
 
 function update(change: (old: DraftsSnapshot) => DraftsSnapshot) {
   snapshot = change(snapshot);

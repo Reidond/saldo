@@ -30,7 +30,11 @@ function fakeServices() {
       authenticate: vi.fn(async (token: string | null) =>
         token === "owner-token" ? principal : null,
       ),
+      isSignedIn: vi.fn(
+        async (token: string | null) => token === "owner-token",
+      ),
       resolveActor: vi.fn(async () => ownerActor),
+      signOut: vi.fn(async () => undefined),
       describe: vi.fn(() => ({
         id: ownerActor.userId,
         email: ownerActor.email,
@@ -171,7 +175,7 @@ describe("routes", () => {
     expect((await request("/api/me", { method: "POST" })).status).toBe(404);
   });
 
-  it("GET /api/status asks the AI provider only for the owner", async () => {
+  it("GET /api/status asks the AI provider only for a signed-in owner", async () => {
     expect(await read(await request("/api/status", { token: null }))).toEqual([
       200,
       { authenticated: false, aiConnected: false },
@@ -181,7 +185,32 @@ describe("routes", () => {
       200,
       { authenticated: true, aiConnected: true },
     ]);
+    expect(services.identity.isSignedIn).toHaveBeenCalledWith("owner-token");
     expect(services.identity.resolveActor).not.toHaveBeenCalled();
+  });
+
+  it("GET /api/status reports a signed-out or disabled owner as signed out", async () => {
+    // The token verifies, but the session ended or the user was disabled:
+    // the guards would answer 401 or 403, so status must not say otherwise.
+    services.identity.isSignedIn.mockResolvedValueOnce(false);
+    expect(await read(await request("/api/status"))).toEqual([
+      200,
+      { authenticated: false, aiConnected: false },
+    ]);
+    expect(services.chat.status).not.toHaveBeenCalled();
+  });
+
+  it("POST /api/session/sign-out ends the actor's sessions", async () => {
+    expect(
+      await read(await request("/api/session/sign-out", { method: "POST" })),
+    ).toEqual([200, { signedOut: true }]);
+    expect(services.identity.signOut).toHaveBeenCalledWith(ownerActor);
+    expect(
+      (await request("/api/session/sign-out", { method: "POST", token: null }))
+        .status,
+    ).toBe(401);
+    expect((await request("/api/session/sign-out")).status).toBe(404);
+    expect(services.identity.signOut).toHaveBeenCalledTimes(1);
   });
 
   it("passes the actor and object fields to subscription services", async () => {

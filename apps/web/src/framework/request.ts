@@ -29,6 +29,10 @@ export function createRscRenderRequest(
     method: action ? "POST" : "GET",
     headers,
     body: action?.body,
+    // A redirect here can only be Access sending an expired session to its
+    // sign-in page; keep it visible (an opaque redirect) instead of following
+    // it cross-origin.
+    redirect: "manual",
   });
 }
 

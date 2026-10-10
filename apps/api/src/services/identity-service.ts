@@ -1,5 +1,6 @@
 import type { Repositories } from "../repositories";
-import type { IdentifiedUser, UserRole } from "../repositories/users";
+import type { IdentityKey } from "../repositories/user-identities";
+import type { IdentifiedUser, User, UserRole } from "../repositories/users";
 import { AccessDeniedError, SessionEndedError } from "./errors";
 import type {
   AccessTokenVerifier,
@@ -17,6 +18,12 @@ export interface IdentityConfig {
   audience?: string;
   /** The only Access subject allowed to use this instance. */
   ownerSubject?: string;
+  /**
+   * Opt-in owner handover (OWNER_HANDOVER_FROM): the Access subject the owner
+   * signed in with before `ownerSubject` or the team domain changed. Without
+   * it, a new identity is never linked to an existing owner.
+   */
+  handoverFromSubject?: string;
 }
 
 /** A verified owner Access token. No database lookup has happened yet. */
@@ -49,6 +56,7 @@ export interface IdentityServiceDeps {
   repos: Pick<
     Repositories,
     | "ensureAccountStatement"
+    | "findLatestUserIdentity"
     | "findOwnerUser"
     | "findUserByIdentity"
     | "insertAuditEventStatement"
@@ -56,11 +64,20 @@ export interface IdentityServiceDeps {
     | "insertUserStatement"
     | "touchUserIdentityStatement"
     | "updateUserProfileStatement"
+    | "updateUserSessionsValidAfterStatement"
   >;
   verifier: AccessTokenVerifier;
   clock: Clock;
   ids: IdGenerator;
   config: IdentityConfig;
+}
+
+/** How an identity that is not linked yet may be linked. */
+interface LinkPlan {
+  /** The existing owner taking the identity over; null creates the owner. */
+  owner: User | null;
+  /** The owner's identity before the handover. */
+  previous: IdentityKey | null;
 }
 
 /** D1's CURRENT_TIMESTAMP format, so every timestamp column compares alike. */
@@ -74,6 +91,20 @@ function claimText(value: unknown, maxLength: number): string | null {
   if (typeof value !== "string") return null;
   const text = value.trim();
   return text && text.length <= maxLength ? text : null;
+}
+
+const identityOf = (principal: Principal): IdentityKey => ({
+  provider,
+  issuer: principal.issuer,
+  subject: principal.subject,
+});
+
+/** Throws unless the user may act with this token. */
+function assertUsable(user: User, principal: Principal) {
+  if (user.status !== "active" || user.role !== "owner")
+    throw new AccessDeniedError();
+  if (principal.issuedAt <= user.sessionsValidAfter)
+    throw new SessionEndedError();
 }
 
 export class IdentityService {
@@ -112,23 +143,43 @@ export class IdentityService {
   }
 
   /**
+   * Whether this token may use the API right now, exactly as resolveActor
+   * would decide (ended sessions, disabled users and refused handovers are
+   * signed out), but without linking or writing anything.
+   */
+  async isSignedIn(token: string | null): Promise<boolean> {
+    const principal = await this.authenticate(token);
+    if (!principal) return false;
+    try {
+      const user = await this.#deps.repos.findUserByIdentity(
+        this.#deps.db,
+        identityOf(principal),
+      );
+      const usable = user ?? (await this.#planLink(principal)).owner;
+      if (usable) assertUsable(usable, principal);
+      return true;
+    } catch (error) {
+      if (
+        error instanceof AccessDeniedError ||
+        error instanceof SessionEndedError
+      )
+        return false;
+      throw error;
+    }
+  }
+
+  /**
    * Finds the user linked to the Access identity, linking the owner on their
    * first request. A new owner keeps the account id equal to their Access
    * subject, so rows saved before users existed stay visible.
    */
   async resolveActor(principal: Principal): Promise<Actor> {
-    const identity = {
-      provider,
-      issuer: principal.issuer,
-      subject: principal.subject,
-    } as const;
     const user =
-      (await this.#deps.repos.findUserByIdentity(this.#deps.db, identity)) ??
-      (await this.#linkOwner(principal));
-    if (user.status !== "active" || user.role !== "owner")
-      throw new AccessDeniedError();
-    if (principal.issuedAt <= user.sessionsValidAfter)
-      throw new SessionEndedError();
+      (await this.#deps.repos.findUserByIdentity(
+        this.#deps.db,
+        identityOf(principal),
+      )) ?? (await this.#linkOwner(principal));
+    assertUsable(user, principal);
     await this.#refresh(user, principal);
     return {
       userId: user.id,
@@ -148,17 +199,71 @@ export class IdentityService {
     };
   }
 
-  /** Links the owner's identity, creating the owner user if none exists. */
-  async #linkOwner(principal: Principal): Promise<IdentifiedUser> {
-    const { db, repos, clock, ids, config } = this.#deps;
+  /**
+   * Ends every session issued so far: from now on the API rejects each Access
+   * token issued at or before this second, without waiting for Cloudflare
+   * Access to revoke it. The web then sends the browser to the Access logout.
+   */
+  async signOut(actor: Actor): Promise<void> {
+    const { db, repos, clock, ids } = this.#deps;
+    const now = clock.now();
+    await db.batch([
+      repos.updateUserSessionsValidAfterStatement(db, {
+        id: actor.userId,
+        accountId: actor.accountId,
+        sessionsValidAfter: Math.floor(now.getTime() / 1000),
+        updatedAt: sqlTimestamp(now),
+      }),
+      repos.insertAuditEventStatement(db, {
+        id: ids.uuid(),
+        accountId: actor.accountId,
+        actorUserId: actor.userId,
+        action: "session.signed_out",
+        targetType: "user",
+        targetId: actor.userId,
+        summary: { provider },
+      }),
+    ]);
+  }
+
+  /**
+   * Decides how an identity that is not linked yet may be linked, without
+   * writing. The configured owner's first identity creates the owner. Once an
+   * owner exists, a different identity (a changed OWNER_SUB or team domain)
+   * takes the owner's account over only through the explicit handover
+   * setting, and only from the owner's most recently linked identity, so a
+   * setting left behind cannot hand the account over a second time.
+   */
+  async #planLink(principal: Principal): Promise<LinkPlan> {
+    const { db, repos, config } = this.#deps;
     if (principal.subject !== config.ownerSubject)
       throw new AccessDeniedError();
-    const identity = {
-      provider,
-      issuer: principal.issuer,
-      subject: principal.subject,
-    } as const;
     const owner = await repos.findOwnerUser(db);
+    if (!owner) return { owner: null, previous: null };
+    const previous = await repos.findLatestUserIdentity(db, owner.id);
+    if (
+      !config.handoverFromSubject ||
+      previous?.subject !== config.handoverFromSubject
+    )
+      throw new AccessDeniedError();
+    return { owner, previous };
+  }
+
+  /** Links the owner's identity, creating the owner user if none exists. */
+  async #linkOwner(principal: Principal): Promise<IdentifiedUser> {
+    const { db, repos, clock, ids } = this.#deps;
+    const identity = identityOf(principal);
+    let plan: LinkPlan;
+    try {
+      plan = await this.#planLink(principal);
+    } catch (error) {
+      // A concurrent first request may have linked this identity after we
+      // looked it up; it then counts as the owner's existing identity.
+      const linked = await repos.findUserByIdentity(db, identity);
+      if (linked) return linked;
+      throw error;
+    }
+    const { owner, previous } = plan;
     const userId = owner?.id ?? ids.uuid();
     const accountId = owner?.accountId ?? principal.subject;
     const statements: D1PreparedStatement[] = [];
@@ -183,10 +288,16 @@ export class IdentityService {
         id: ids.uuid(),
         accountId,
         actorUserId: userId,
-        action: "identity.linked",
+        action: previous ? "identity.handover" : "identity.linked",
         targetType: "user",
         targetId: userId,
-        summary: { provider, newUser: !owner },
+        summary: previous
+          ? {
+              provider,
+              issuerChanged: previous.issuer !== identity.issuer,
+              subjectChanged: previous.subject !== identity.subject,
+            }
+          : { provider, newUser: true },
       }),
     );
     try {
@@ -203,7 +314,11 @@ export class IdentityService {
     return linked;
   }
 
-  /** Keeps the profile current and records activity at most every 10 minutes. */
+  /**
+   * Keeps the profile current and records activity at most every 10 minutes.
+   * This is bookkeeping that rides on any request, reads included, so a
+   * failed write (D1 busy or read-only) never fails the request itself.
+   */
   async #refresh(user: IdentifiedUser, principal: Principal) {
     const { db, repos, clock } = this.#deps;
     const now = clock.now();
@@ -225,12 +340,15 @@ export class IdentityService {
     if (!(now.getTime() - lastSeen < lastSeenIntervalMs))
       statements.push(
         repos.touchUserIdentityStatement(db, {
-          provider,
-          issuer: principal.issuer,
-          subject: principal.subject,
+          ...identityOf(principal),
           lastSeenAt: sqlTimestamp(now),
         }),
       );
-    if (statements.length) await db.batch(statements);
+    if (!statements.length) return;
+    try {
+      await db.batch(statements);
+    } catch {
+      // Retried on a later request; the profile shown comes from the token.
+    }
   }
 }

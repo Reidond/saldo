@@ -759,11 +759,121 @@ describe("GET /api/me and Access login", () => {
     expect(await body(response)).toEqual({
       error: "This Saldo instance is private.",
     });
+    // Status agrees with the guards, so a client cannot loop on it.
+    expect(await body(await call("/api/status", { env: withAi() }))).toEqual({
+      authenticated: false,
+      aiConnected: false,
+    });
+    expect(bridge.fetch).not.toHaveBeenCalled();
+  });
+
+  it("refuses a changed owner subject unless the owner opts in to a handover", async () => {
+    const before = (await body(await call("/api/me"))).user;
+    await create();
+    const rotatedSubject = "owner-subject-0002";
+    const rotated = await keys.sign({ sub: rotatedSubject });
+    const changed = env({ OWNER_SUB: rotatedSubject });
+    const refused = await call("/api/subscriptions", {
+      token: rotated,
+      env: changed,
+    });
+    expect(refused.status).toBe(403);
+    expect(await body(refused)).toEqual({
+      error: "This Saldo instance is private.",
+    });
+    expect(
+      await body(await call("/api/status", { token: rotated, env: changed })),
+    ).toEqual({ authenticated: false, aiConnected: false });
+
+    const handover = env({
+      OWNER_SUB: rotatedSubject,
+      OWNER_HANDOVER_FROM: ` ${accessSettings.ownerSubject} `,
+    });
+    expect(
+      await body(await call("/api/status", { token: rotated, env: handover })),
+    ).toEqual({ authenticated: true, aiConnected: false });
+    expect((await users()).results).toHaveLength(1);
+    const me = await call("/api/me", { token: rotated, env: handover });
+    expect(me.status).toBe(200);
+    expect((await body(me)).user.id).toBe(before.id);
+    const list = await call("/api/subscriptions", {
+      token: rotated,
+      env: handover,
+    });
+    expect((await body(list)).subscriptions).toHaveLength(1);
+    const audit = await d1.db
+      .prepare(
+        "SELECT action, summary FROM audit_events WHERE action = 'identity.handover'",
+      )
+      .all();
+    expect(audit.results).toEqual([
+      {
+        action: "identity.handover",
+        summary:
+          '{"provider":"cloudflare_access","issuerChanged":false,"subjectChanged":true}',
+      },
+    ]);
   });
 
   it("answers 401 without a token and 404 for other methods", async () => {
     expect((await call("/api/me", { token: null })).status).toBe(401);
     expect((await call("/api/me", { method: "POST" })).status).toBe(404);
     expect((await call("/api/me", { method: "HEAD" })).status).toBe(404);
+  });
+});
+
+describe("POST /api/session/sign-out", () => {
+  const now = () => Math.floor(Date.now() / 1000);
+
+  it("rejects the signed-out token at once, everywhere, and audits it", async () => {
+    const token = await keys.sign({ iat: now() - 10 });
+    expect((await call("/api/me", { token })).status).toBe(200);
+    const response = await call("/api/session/sign-out", {
+      method: "POST",
+      token,
+    });
+    expect(response.status).toBe(200);
+    expectJsonHeaders(response);
+    expect(await body(response)).toEqual({ signedOut: true });
+
+    for (const path of ["/api/me", "/api/subscriptions"]) {
+      const replay = await call(path, { token });
+      expect(replay.status).toBe(401);
+      expect(await body(replay)).toEqual({ error: privateMessage });
+    }
+    expect(
+      (await call("/api/session/sign-out", { method: "POST", token })).status,
+    ).toBe(401);
+    expect(
+      await body(await call("/api/status", { token, env: withAi() })),
+    ).toEqual({ authenticated: false, aiConnected: false });
+    expect(bridge.fetch).not.toHaveBeenCalled();
+
+    const audit = await d1.db
+      .prepare("SELECT action FROM audit_events ORDER BY created_at, action")
+      .all();
+    expect(audit.results).toEqual([
+      { action: "identity.linked" },
+      { action: "session.signed_out" },
+    ]);
+    // Signing in again through Access issues a newer token, which works.
+    const fresh = await keys.sign({ iat: now() + 5 });
+    expect((await call("/api/me", { token: fresh })).status).toBe(200);
+  });
+
+  it("needs the app Origin and answers only POST", async () => {
+    const token = await keys.sign({ iat: now() - 10 });
+    const foreign = await call("/api/session/sign-out", {
+      method: "POST",
+      token,
+      headers: { Origin: "https://evil.test" },
+    });
+    expect(foreign.status).toBe(403);
+    expect(await body(foreign)).toEqual({ error: "Origin not allowed" });
+    for (const method of ["GET", "HEAD", "PUT"])
+      expect(
+        (await call("/api/session/sign-out", { method, token })).status,
+      ).toBe(404);
+    expect((await call("/api/me", { token })).status).toBe(200);
   });
 });

@@ -19,6 +19,12 @@ export interface Env {
   ACCESS_TEAM_DOMAIN?: string;
   ACCESS_AUD?: string;
   OWNER_SUB?: string;
+  /**
+   * Optional Worker secret, set by the owner only for an identity handover
+   * (README, "Owner identity handover"): the Access subject the owner used
+   * before OWNER_SUB or ACCESS_TEAM_DOMAIN changed.
+   */
+  OWNER_HANDOVER_FROM?: string;
 }
 
 const verifier = createAccessTokenVerifier();
@@ -38,6 +44,7 @@ export function createScope(env: Env): RequestScope {
         teamDomain: env.ACCESS_TEAM_DOMAIN,
         audience: env.ACCESS_AUD,
         ownerSubject: env.OWNER_SUB,
+        handoverFromSubject: env.OWNER_HANDOVER_FROM?.trim() || undefined,
       },
     }),
     appOrigin: env.APP_ORIGIN,

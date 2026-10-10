@@ -30,6 +30,7 @@ export async function apiClientFor(
       ai: config.ai,
       seed: config.scenario === "empty" ? [] : undefined,
       down: config.scenario === "api-down",
+      signedOut: config.scenario === "signed-out",
     }),
   );
   return syntheticClient;

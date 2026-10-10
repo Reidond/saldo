@@ -9,6 +9,11 @@ export interface ApiClient {
   status(): Promise<ApiStatus>;
   /** The signed-in user (GET /api/me). */
   me(): Promise<Me>;
+  /**
+   * Ends the owner's Saldo sessions at once (POST /api/session/sign-out):
+   * every Access token issued so far is refused from now on.
+   */
+  signOut(): Promise<void>;
   listSubscriptions(): Promise<Subscription[]>;
   createSubscription(input: SubscriptionInput): Promise<Subscription>;
   updateSubscription(

@@ -96,3 +96,29 @@ export function updateUserProfileStatement(
     )
     .bind(profile.email, profile.displayName, profile.updatedAt, profile.id);
 }
+
+/**
+ * Rejects every Access token issued at or before `sessionsValidAfter` (Unix
+ * seconds). The value never moves backwards, so a stale sign-out cannot
+ * revive sessions that a later one ended.
+ */
+export function updateUserSessionsValidAfterStatement(
+  db: D1Database,
+  change: {
+    id: string;
+    accountId: string;
+    sessionsValidAfter: number;
+    updatedAt: string;
+  },
+): D1PreparedStatement {
+  return db
+    .prepare(
+      "UPDATE users SET sessions_valid_after = MAX(sessions_valid_after, ?), updated_at = ? WHERE id = ? AND account_id = ?",
+    )
+    .bind(
+      change.sessionsValidAfter,
+      change.updatedAt,
+      change.id,
+      change.accountId,
+    );
+}

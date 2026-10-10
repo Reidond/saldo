@@ -1,4 +1,4 @@
-import { it, expect } from "vite-plus/test";
+import { beforeAll, describe, expect, it } from "vite-plus/test";
 import {
   generateKeyPair,
   SignJWT,
@@ -42,7 +42,7 @@ it("cryptographically isolates owner and rejects forged, expired, wrong audience
     key: CryptoKey = privateKey,
     alg = "RS256",
   ) {
-    return new SignJWT({})
+    return new SignJWT({ type: "app" })
       .setProtectedHeader({ alg, kid: "test" })
       .setSubject(sub)
       .setAudience(aud)
@@ -74,7 +74,7 @@ it("cryptographically isolates owner and rejects forged, expired, wrong audience
       "1h",
       otherKey,
     ),
-    await new SignJWT({})
+    await new SignJWT({ type: "app" })
       .setProtectedHeader({ alg: "HS256", kid: "test" })
       .setSubject("owner")
       .setAudience("saldo-only")
@@ -98,7 +98,7 @@ it("requires subject, expiry and issue time claims", async () => {
     audience: "saldo-only",
   };
   const base = () =>
-    new SignJWT({})
+    new SignJWT({ type: "app" })
       .setProtectedHeader({ alg: "RS256", kid: "test" })
       .setAudience("saldo-only")
       .setIssuer("https://example.cloudflareaccess.com");
@@ -124,5 +124,97 @@ it("requires subject, expiry and issue time claims", async () => {
     issuedAt: 1_800_000_000,
     email: undefined,
     name: undefined,
+  });
+});
+
+describe("parity with the web gate", () => {
+  const expected = {
+    teamDomain: "example.cloudflareaccess.com",
+    audience: "saldo-only",
+  };
+  const now = () => Math.floor(Date.now() / 1000);
+  let sign: (
+    payload: Record<string, unknown>,
+    claims?: { aud?: string; iss?: string; exp?: number; iat?: number },
+  ) => Promise<string>;
+  let verifier: ReturnType<typeof createAccessTokenVerifier>;
+
+  beforeAll(async () => {
+    const { publicKey, privateKey } = await generateKeyPair("RS256");
+    const keys = createLocalJWKSet({
+      keys: [{ ...(await exportJWK(publicKey)), kid: "test" }],
+    });
+    verifier = createAccessTokenVerifier(() => keys);
+    sign = (payload, claims = {}) =>
+      new SignJWT({ sub: "owner", ...payload })
+        .setProtectedHeader({ alg: "RS256", kid: "test" })
+        .setAudience(claims.aud ?? "saldo-only")
+        .setIssuer(claims.iss ?? "https://example.cloudflareaccess.com")
+        .setIssuedAt(claims.iat ?? now())
+        .setExpirationTime(claims.exp ?? now() + 3600)
+        .sign(privateKey);
+  });
+
+  it("accepts only Access application tokens", async () => {
+    await expect(
+      verifier.verify(await sign({ type: "app" }), expected),
+    ).resolves.toMatchObject({ subject: "owner" });
+    for (const payload of [
+      {},
+      { type: "org" },
+      { type: "APP" },
+      { type: ["app"] },
+      { type: null },
+    ])
+      await expect(
+        verifier.verify(await sign(payload), expected),
+      ).rejects.toThrow();
+  });
+
+  it("rejects a wrong audience or issuer and an expired token", async () => {
+    for (const claims of [
+      { aud: "another-app" },
+      { iss: "https://evil.cloudflareaccess.com" },
+      { iss: "https://example.cloudflareaccess.com/" },
+      { exp: now() - 60, iat: now() - 3600 },
+    ])
+      await expect(
+        verifier.verify(await sign({ type: "app" }, claims), expected),
+      ).rejects.toThrow();
+  });
+
+  it("allows 5 seconds of clock skew on expiry, like the web gate", async () => {
+    await expect(
+      verifier.verify(
+        await sign({ type: "app" }, { exp: now() - 2, iat: now() - 60 }),
+        expected,
+      ),
+    ).resolves.toMatchObject({ subject: "owner" });
+    await expect(
+      verifier.verify(
+        await sign({ type: "app" }, { exp: now() - 30, iat: now() - 60 }),
+        expected,
+      ),
+    ).rejects.toThrow();
+  });
+
+  it("refuses any subject other than the owner through the identity service", async () => {
+    const identity = new IdentityService({
+      db: new FakeDatabase().d1,
+      repos: fakeRepositories(new FakeDatabase()),
+      verifier,
+      clock: fixedClock(),
+      ids: sequentialIds(),
+      config: { ...expected, ownerSubject: "owner" },
+    });
+    expect(
+      await identity.authenticate(await sign({ type: "app" })),
+    ).toMatchObject({ subject: "owner" });
+    for (const payload of [
+      { type: "app", sub: "another-owner" },
+      { type: "app", sub: "" },
+      { type: "org" },
+    ])
+      expect(await identity.authenticate(await sign(payload))).toBeNull();
   });
 });

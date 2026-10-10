@@ -8,6 +8,7 @@ import { json, notFound } from "./responses";
 import { chatRoutes } from "./routes/chat";
 import { meRoutes } from "./routes/me";
 import { reviewRoutes } from "./routes/review";
+import { sessionRoutes } from "./routes/session";
 import { statusRoutes } from "./routes/status";
 import { subscriptionRoutes } from "./routes/subscriptions";
 
@@ -38,6 +39,7 @@ export function createApp(scopeOf: ScopeResolver) {
 
   const api = actorApp(scopeOf);
   meRoutes(api);
+  sessionRoutes(api);
   subscriptionRoutes(api);
   reviewRoutes(api);
   chatRoutes(api);

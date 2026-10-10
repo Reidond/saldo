@@ -19,6 +19,7 @@ import {
   upsertSubscriptionStatement,
 } from "../../src/repositories/subscriptions";
 import {
+  findLatestUserIdentity,
   insertUserIdentityStatement,
   touchUserIdentityStatement,
   type IdentityKey,
@@ -28,6 +29,7 @@ import {
   findUserByIdentity,
   insertUserStatement,
   updateUserProfileStatement,
+  updateUserSessionsValidAfterStatement,
 } from "../../src/repositories/users";
 import { synthetic } from "../support/fixtures";
 import { startLocalD1, type LocalD1 } from "../support/d1";
@@ -234,6 +236,67 @@ describe("users and identities", () => {
       displayName: "Synthetic Owner",
       identityLastSeenAt: "2026-10-08 12:30:00",
     });
+  });
+});
+
+describe("sign-out and handover", () => {
+  const cutOff = (sessionsValidAfter: number, accountId = "account-a") =>
+    updateUserSessionsValidAfterStatement(db, {
+      id: owner.id,
+      accountId,
+      sessionsValidAfter,
+      updatedAt: "2026-10-08 12:30:00",
+    }).run();
+  const stored = () =>
+    db
+      .prepare(
+        "SELECT sessions_valid_after, updated_at FROM users WHERE id = ?",
+      )
+      .bind(owner.id)
+      .first();
+
+  it("moves sessions_valid_after forward only, within the account", async () => {
+    await insertUserStatement(db, owner).run();
+    await cutOff(1_800_000_000);
+    expect(await stored()).toEqual({
+      sessions_valid_after: 1_800_000_000,
+      updated_at: "2026-10-08 12:30:00",
+    });
+    await cutOff(1_700_000_000);
+    await cutOff(1_900_000_000, "account-b");
+    expect(await stored()).toMatchObject({
+      sessions_valid_after: 1_800_000_000,
+    });
+    await insertUserIdentityStatement(db, {
+      ...identity,
+      userId: owner.id,
+      lastSeenAt: "2026-10-08 12:00:00",
+    }).run();
+    expect(await findUserByIdentity(db, identity)).toMatchObject({
+      sessionsValidAfter: 1_800_000_000,
+    });
+  });
+
+  it("finds a user's most recently linked identity", async () => {
+    await insertUserStatement(db, owner).run();
+    expect(await findLatestUserIdentity(db, owner.id)).toBeNull();
+    const second = { ...identity, subject: "rotated-subject" };
+    const third = {
+      ...identity,
+      issuer: "https://renamed.cloudflareaccess.com",
+    };
+    // Same second: insertion order decides.
+    await db.batch(
+      [identity, second, third].map((i) =>
+        insertUserIdentityStatement(db, {
+          ...i,
+          userId: owner.id,
+          lastSeenAt: "2026-10-08 12:00:00",
+        }),
+      ),
+    );
+    expect(await findLatestUserIdentity(db, owner.id)).toEqual(third);
+    expect(await findLatestUserIdentity(db, "user-other")).toBeNull();
   });
 });
 
