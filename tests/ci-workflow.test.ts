@@ -59,6 +59,14 @@ describe("separate API and web deployment", () => {
     for (const component of ["bridge", "api", "web"])
       expect(step(`deployment.ts deploy ${component}`)).not.toContain("if:");
   });
+  it("runs the read-only preflight with the token before the first mutation", () => {
+    const prepare = step("deployment.ts prepare");
+    expect(prepare).toContain("Preflight token permissions");
+    expect(prepare).toContain("secrets.CLOUDFLARE_API_TOKEN");
+    expect(deploy.indexOf("deployment.ts prepare")).toBeLessThan(
+      deploy.indexOf("deployment.ts migrate"),
+    );
+  });
   it("always records the commit and each Worker's version, even after a failure", () => {
     const record = step("deployment.ts record");
     expect(record).toContain("if: always()");

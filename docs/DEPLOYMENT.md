@@ -45,7 +45,7 @@ Never run `cf dev`, `cf build` or `cf deploy` in a directory without a `cloudfla
 
 - `SALDO_RELEASE=production` switches `cloudflare.config.ts` to release mode. It then requires `SALDO_APP_ORIGIN`, `SALDO_ACCESS_TEAM_DOMAIN`, `SALDO_ACCESS_AUD`, `SALDO_OWNER_SUB` and `SALDO_D1_DATABASE_ID`, and refuses to build without them.
 - Any other build uses local placeholders and no Access settings, so a stray deploy of it fails closed: every protected request is refused.
-- Before anything changes, the deploy job checks that every live Worker already carries the same values: `saldo-api` and `saldo-web` once they exist, and the legacy `saldo` app Worker while it exists. A mistyped Environment value therefore stops the run instead of replacing a working Access configuration. To change one deliberately, update the live Workers and the Environment together.
+- Before anything changes, the deploy job checks that every live Worker already carries the same values: `saldo-api` and `saldo-web` once a release has deployed them (a [placeholder](#adding-a-worker) is not compared), and the legacy `saldo` app Worker while it exists. A mistyped Environment value therefore stops the run instead of replacing a working Access configuration. To change one deliberately, update the live Workers and the Environment together.
 
 Secrets (`AI_BRIDGE_SECRET`, `SIWC_STATE_KEY`, the SIWC import chunks) are not in the configuration. `cf` keeps a Worker's secrets across deploys.
 
@@ -71,6 +71,15 @@ cd apps/bridge && pnpm exec cf workers secrets bulk --worker saldo-ai-bridge --f
 
 Never pass a secret value as a command-line argument (`--text`, `--body`): it ends up in shell history and process listings. [docs/SIWC.md](SIWC.md) describes the AI bridge secrets.
 
+`saldo-api` has no `AI_BRIDGE_SECRET` yet, and neither had the legacy `saldo` Worker, so AI is unavailable either way and `verify` reports it as a warning, not a failure. When the ChatGPT connection is implemented, generate one strong value and set it on the API and on the bridge, each with its own owner-only file of the shape above:
+
+```sh
+cd apps/api && pnpm exec cf workers secrets bulk --worker saldo-api --file /private/path/app-secrets.json
+cd apps/bridge && pnpm exec cf workers secrets bulk --worker saldo-ai-bridge --file /private/path/bridge-secrets.json
+```
+
+A release never sets or removes secrets, and the next deploy keeps them. (If the [ChatGPT plan](plans/chatgpt-connect-and-login.md) retires the bridge first, the secret goes with it instead.)
+
 ## GitHub Actions delivery
 
 The `Check and deploy Saldo` workflow checks every pull request and deploys after successful checks on `main` (also on manual dispatch from `main`).
@@ -94,7 +103,18 @@ The GitHub Environment `saldo-production` is restricted to `main` and holds:
 
 Step environments, not the job, carry the secrets, and only the steps that need them get them. The audience and the owner subject are secrets so that GitHub masks them in public logs.
 
-The owner-reviewed token needs Workers Scripts edit access (it creates `saldo-api` and `saldo-web` on the first deploy and reads settings, deployments, versions and custom domains) plus account-level Containers write and D1 write, with a short expiry. A permission failure stops the workflow; never broaden the token automatically. It needs no R2 write, DNS, route or custom-domain permission.
+`CLOUDFLARE_API_TOKEN` is owner-reviewed, has a short expiry and exactly these permissions:
+
+| Scope                                                        | Permission                | Used for                                                                                                                              |
+| ------------------------------------------------------------ | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Workers `saldo`, `saldo-ai-bridge`, `saldo-api`, `saldo-web` | Individual Workers Editor | Deploying each Worker and reading its settings, workers.dev and Preview URL settings, deployments and versions. `saldo` is only read. |
+| Account                                                      | Workers Scripts Read      | The account-level reads: custom domains (`workers/domains`) and the account's workers.dev subdomain (`workers/subdomain`).            |
+| Account                                                      | Containers Read/Write     | The bridge's Container application.                                                                                                   |
+| Account                                                      | D1 Read/Write             | The Time Travel recovery bookmark and the migrations.                                                                                 |
+
+It needs no R2 write, DNS, route or custom-domain permission. Individual Workers Editor can only name Workers that already exist, so the token cannot create one: a new Worker starts as an owner-created placeholder (see [Adding a Worker](#adding-a-worker)).
+
+`prepare` makes every read the release needs before anything changes, so a permission gap stops the run before a migration or a deploy. A 403 on the "custom-domain read" or the "workers.dev subdomain read" means the account Workers Scripts Read grant is missing; on a Worker's "settings read", that Worker is not on the token. A permission failure stops the workflow; never broaden the token automatically.
 
 ### Deployment (main only)
 
@@ -103,10 +123,15 @@ The deploy job runs in one concurrency group without cancellation, so a later pu
 1. Mask and validate the release settings.
 2. Repeat the checks, and refuse a commit that is no longer the latest `main`.
 3. Build every Worker in release mode, run `cf`'s dry-run validation and the image smoke test again.
-4. `prepare`: verify each Build Output (production mode, Worker name, no workers.dev or Preview URLs, no routes or domains, exactly the approved bindings, assets only on the web with `runWorkerFirst`, the unchanged Durable Object and Container), scan uploaded code and assets for the token and identifiers, verify the live Workers' private settings and identifiers, and take a D1 Time Travel recovery bookmark. The pre-migration time goes to the run summary; no database contents leave Cloudflare.
+4. `prepare`: verify each Build Output (production mode, Worker name, no workers.dev or Preview URLs, no routes or domains, exactly the approved bindings, assets only on the web with `runWorkerFirst`, the unchanged Durable Object and Container) and scan uploaded code and assets for the token and identifiers. Then the read-only preflight: the account-level reads (no custom domain on the API or the bridge, the app hostname on `saldo-web` or `saldo`, the workers.dev subdomain), each Worker's settings, endpoint settings, deployments and active version, the legacy `saldo` Worker, and a D1 Time Travel recovery bookmark.
+   - Every Worker must exist; the token cannot create one.
+   - Deployed Workers must already carry the release identifiers. A [placeholder](#adding-a-worker) is reported and not compared.
+   - A Worker with workers.dev or Preview URLs on is reported, and its deploy step turns them off. The legacy Worker's must already be off.
+   - The pre-migration time goes to the run summary; no database contents leave Cloudflare.
 5. `migrate`: `cf d1 migrations apply <DATABASE_ID> --dir migrations`. On failure the run stops; recovery is a deliberate owner action with the recorded time.
-6. `deploy bridge`, `deploy api`, `deploy web`: `cf deploy --prebuilt --mode production --no-provision` (the bridge with `--containers-rollout immediate`), tagged with the commit, run and attempt. `--no-provision` means a release never creates resources. Each version also records a hash of its Build Output (for the bridge, of the image's sources). A Worker whose active version already has that hash is skipped, so the bridge only rolls out when it changed, and a re-run of the same commit redoes nothing that already succeeded. After each deploy, the new version must be the one serving all traffic.
-7. `verify`: compare live bindings with the snapshot (pre-existing secrets and the Durable Object namespace survive) and with the release, and run the smoke checks below.
+6. `deploy bridge`, `deploy api`, `deploy web`: `cf deploy --prebuilt --mode production --no-provision` (the bridge with `--containers-rollout immediate`), tagged with the commit, run and attempt. `--no-provision` means a release never creates resources. Each version also records a hash of its Build Output (for the bridge, of the image's sources). A Worker whose active version already has that hash is skipped, so the bridge only rolls out when it changed, and a re-run of the same commit redoes nothing that already succeeded. After each deploy, the new version must be the one serving all traffic, with workers.dev and Preview URLs off.
+   - `cf deploy` turns workers.dev and Preview URLs off after it activates the version, so a failure there leaves the new version serving with them on. The re-run finds the version unchanged, still checks the endpoints, and runs `cf workers triggers deploy --prebuilt --mode production`, which applies the Build Output's triggers and endpoint settings without uploading a version. The summary marks that Worker `unchanged (private endpoints re-applied)`.
+7. `verify`: compare live bindings with the snapshot (pre-existing secrets, a placeholder's included, and the Durable Object namespace survive) and with the release, repeat the account-level reads, and run the smoke checks below. A missing `AI_BRIDGE_SECRET` on `saldo-api` or `saldo-ai-bridge` is a warning in the log and the summary, not a failure: AI stays unavailable until it is [set](#secrets).
 8. `record` (always, even after a failure): the job summary lists the commit, the tag and each Worker's outcome (`deployed`, `unchanged`, `failed`, `not attempted`) and active version. A run where some Workers changed before a failure is marked partial, and the job fails.
 
 A failed check after deployment is not rolled back automatically; database and Container changes can need deliberate recovery.
@@ -115,7 +140,7 @@ A failed check after deployment is not rolled back automatically; database and C
 
 - Anonymous `GET /` and `GET /api/status` on the app origin get the Access login redirect (to the team domain) or 401.
 - `saldo-api`, `saldo-web` and `saldo-ai-bridge` have workers.dev and Preview URLs disabled, and their workers.dev URLs answer 404.
-- `saldo-api` and `saldo-ai-bridge` have no custom domain. The app hostname is served by `saldo-web` or, until the cutover, by the legacy `saldo` Worker, which the summary reports as pending. Workers routes are zone-level and never deployed: no configuration declares one.
+- `saldo-api` and `saldo-ai-bridge` have no custom domain. The app hostname is served by `saldo-web` or, during a cutover or a rollback, by the legacy `saldo` Worker, which the summary reports as pending. Workers routes are zone-level and never deployed: no configuration declares one.
 - Before upload, no Build Output file other than binding metadata contains the API token, the Access audience or the owner subject, and no `.dev.vars`, `.env`, key or secrets file is uploaded.
 
 ### Roll back one Worker
@@ -130,24 +155,33 @@ pnpm exec cf workers deployments create --worker saldo-web --strategy percentage
 
 Versions carry the release tag (`<commit>-<run>-<attempt>`), so each version's commit is known. Roll back the web before the API when the API's contract changed. A rollback past a secret change needs `--bypass-deployment-checks`. The bridge cannot roll back past a Durable Object lifecycle change; roll it back only to a version deployed with `cf`. D1 has no per-Worker rollback: migrations are additive, so older versions keep working, and `cf d1 time-travel restore` to the recorded pre-migration time is a deliberate, destructive owner action. The next merge to `main` deploys whatever `main` holds, so fix forward or revert there too.
 
+## Adding a Worker
+
+The token's Individual Workers Editor grants can only name Workers that already exist, so a release cannot create one, and `prepare` stops while a deployable Worker is missing. To add a Worker:
+
+1. In the repository: give it its own `cloudflare.config.ts` project, add it to `components`, `deployOrder`, `expectedBindings` and `validateLive` in `scripts/ci/deployment.ts`, and give it its own deploy step in the workflow, with tests.
+2. As the owner, create an inert placeholder with exactly the configured name: Workers & Pages → Create → Start with Hello World. Give it no bindings; secrets are allowed and survive the first deploy.
+3. Turn its public endpoints off: the Worker's Settings → Domains & Routes → disable workers.dev and Preview URLs. The first deploy turns them off too, but the placeholder should not answer publicly until then.
+4. Add the Worker to the token's Individual Workers Editor list (My Profile → API Tokens → edit; the token value stays the same).
+5. Merge, or re-run the workflow from `main`. `prepare` reports the Worker as a placeholder and does not compare its identifiers; its deploy step replaces it with the first release.
+
+A Worker counts as a placeholder only while it has no bindings other than secrets and its active version was not uploaded by a release (its message is not `saldo-content …`). Anything else is checked as a deployed Worker, so an emptied Worker that a release once deployed still stops the run.
+
 ## Moving production to saldo-web and saldo-api
 
-Before this change, one Worker, `saldo`, served the pages, the assets and `/api` on `saldo.sands.red`. The cutover moves the hostname to `saldo-web` without downtime and without an unprotected moment:
+Before the split, one Worker, `saldo`, served the pages, the assets and `/api` on `saldo.sands.red`. The first production cutover moved the hostname to `saldo-web`. It relied on two facts:
 
-- Cloudflare Access protects the hostname, not a Worker, so the Access application keeps protecting every path while the hostname changes Workers. Both new Workers also verify the Access JWT themselves.
-- The first deploy creates `saldo-api` and `saldo-web` next to `saldo`. Neither has a route, a domain or workers.dev, so production traffic stays on `saldo` until the owner moves the hostname.
-- Moving a Workers custom domain switches its origin in one step; the DNS record stays the same.
-- `saldo` and `saldo-api` share the D1 database. Migrations are additive, so `saldo` keeps working, and moving the hostname back is the rollback.
+- Cloudflare Access protects the hostname, not a Worker, so the Access application kept protecting every path while the hostname changed Workers. Both new Workers also verify the Access JWT themselves.
+- `saldo` and `saldo-api` share the D1 database. Migrations are additive, so `saldo` keeps working.
 
-Steps:
+What happened:
 
-1. Before merging: fill the Environment (see [Protected configuration](#protected-configuration)) with values equal to the live `saldo` Worker's, and confirm the token can create Workers.
-2. Merge. The run deploys the bridge with `cf` for the first time (same Durable Object namespace and Container application), creates `saldo-api` and `saldo-web`, and reports the cutover as pending.
-3. Move the domain: Cloudflare dashboard → Workers & Pages → `saldo-web` → Settings → Domains & Routes → Add → Custom domain `saldo.sands.red`, and confirm moving it from `saldo`. (`cf` has no command for Workers custom domains yet.)
-4. Verify as the owner: sign in through Access, load the overview and a subscription, and check that saving works. Anonymous requests still get the Access login.
-5. Re-run the workflow from `main` (manual dispatch). Every Worker reports `unchanged`, and the summary says the web serves the hostname.
+1. The owner created `saldo-api` and `saldo-web` and added them to the per-Worker token, which cannot create Workers. `prepare` then treated any existing Worker as a deployment, so the placeholders were given the release vars by hand; it now recognizes a binding-less placeholder (see [Adding a Worker](#adding-a-worker)).
+2. The release deployed the bridge with `cf` for the first time (same Durable Object namespace and Container application), then `saldo-api` and `saldo-web`, and reported the cutover as pending.
+3. The domain moved by removing it and adding it again. The dashboard cannot move a custom domain that is attached to another Worker: that needs the API's `override_existing_origin`, and `cf` has no custom-domain command. So the owner removed `saldo.sands.red` from `saldo` (Workers & Pages → `saldo` → Settings → Domains & Routes) and then added it to `saldo-web` (Add → Custom domain). For the few seconds in between, no Worker served the hostname; Access stayed in front of it throughout, so nothing was served unprotected.
+4. The owner signed in through Access and checked loading and saving. A confirmation run from `main` reported every Worker `unchanged` and the hostname on `saldo-web`.
 
-Roll back the cutover by moving the custom domain back to `saldo`. Keep `saldo` until the new Workers have run in production for a while. Deleting it (`cf workers delete`) is a separate owner decision; it does not delete the D1 database or the R2 bucket.
+The legacy `saldo` Worker remains, with no domain, as the rollback target. To roll back, remove the domain from `saldo-web` and add it to `saldo`, with the same few seconds' gap. While `saldo` exists, `prepare` keeps checking its identifiers and endpoints. Deleting it (`cf workers delete`) is an owner decision: it removes the rollback target but not the D1 database or the R2 bucket. After deleting it, remove it from the token.
 
 ## Gaps: what `cf` cannot do yet
 
@@ -164,7 +198,7 @@ Roll back the cutover by moving the custom domain back to `saldo`. Keep `saldo` 
 | **`cf dev` forbids code generation**: it evaluates the Worker inside a runner object.                                           | The API detects this and uses Elysia's dynamic handlers in development only; deployed Workers compile at startup as before.                                                                                                       |
 | **No platform proxy** like Wrangler's `getPlatformProxy()`.                                                                     | API tests start a local D1 with Miniflare 5, the runtime under `cf`.                                                                                                                                                              |
 | **Custom domains in non-interactive deploys.** `cf deploy` in CI silently moves a configured custom domain from another Worker. | No configuration declares domains; moving a domain is an owner action.                                                                                                                                                            |
-| **No custom-domain command.** `cf` cannot list, attach or move Workers custom domains.                                          | The owner moves the domain in the dashboard once (see the cutover). CI reads domains through the API to check them.                                                                                                               |
+| **No custom-domain command.** `cf` cannot list, attach or move Workers custom domains.                                          | The owner removes the domain from one Worker, then adds it to the other: the dashboard cannot move an attached domain (that needs `override_existing_origin`). CI reads domains through the API.                                  |
 | **Previews** cannot run Durable Object Containers.                                                                              | Every configuration refuses Worker Previews.                                                                                                                                                                                      |
 
 ## First-time setup (owner)
@@ -173,7 +207,7 @@ Roll back the cutover by moving the custom domain back to `saldo`. Keep `saldo` 
 2. Sign in with `cf auth login` (`--no-browser` on a remote machine). `cf` keeps its own credentials.
 3. Create the D1 database and the private R2 bucket `saldo-private`, and confirm costs. Releases never provision resources.
 4. Configure an owner-only Cloudflare Access self-hosted application for the hostname (for example `saldo.sands.red`). Protect all paths, allow only the owner, add no bypass. Keep the binding cookie off and the SameSite setting at Lax or None.
-5. Fill the `saldo-production` Environment (see [Protected configuration](#protected-configuration)). `SALDO_OWNER_SUB` is the verified subject of the owner's Access session, not an email.
+5. Fill the `saldo-production` Environment (see [Protected configuration](#protected-configuration)). `SALDO_OWNER_SUB` is the verified subject of the owner's Access session, not an email. Create the token with exactly the permissions listed there, after creating each Worker as a placeholder ([Adding a Worker](#adding-a-worker)).
 6. Set the bridge and AI secrets ([docs/SIWC.md](SIWC.md)), then merge to `main`. Verify that unauthorized requests get 401 or the Access login before loading private records.
 
 ## Release checklist

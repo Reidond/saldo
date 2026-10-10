@@ -10,6 +10,10 @@ import {
   validateWeb,
   validateLegacy,
   validatePrivateEndpoints,
+  privateEndpoints,
+  isPlaceholder,
+  withoutAiSecret,
+  contentMessage,
   assertPreserved,
   validateBridge,
   assertLatestMain,
@@ -172,6 +176,48 @@ describe("CI live configuration preservation", () => {
       { enabled: false },
     ])
       expect(() => validatePrivateEndpoints(v)).toThrow();
+  });
+  it("reports private endpoints without throwing", () => {
+    expect(privateEndpoints({ enabled: false, previews_enabled: false })).toBe(
+      true,
+    );
+    for (const v of [{ enabled: true, previews_enabled: false }, {}, null])
+      expect(privateEndpoints(v)).toBe(false);
+  });
+  it("recognizes only a binding-less Worker no release deployed as a placeholder", () => {
+    const secret = { name: "AI_BRIDGE_SECRET", type: "secret_text" };
+    expect(isPlaceholder({ bindings: [] })).toBe(true);
+    expect(isPlaceholder({ bindings: [secret] }, "Hello World")).toBe(true);
+    expect(
+      isPlaceholder({ bindings: [] }, contentMessage("1".repeat(64))),
+    ).toBe(false);
+    expect(isPlaceholder(web)).toBe(false);
+    expect(
+      isPlaceholder({ bindings: [{ name: "APP_ORIGIN", type: "plain_text" }] }),
+    ).toBe(false);
+  });
+  it("lists the Workers without the AI bridge secret", () => {
+    const secret = { name: "AI_BRIDGE_SECRET", type: "secret_text" };
+    expect(
+      withoutAiSecret({ api: settings, bridge: { bindings: [secret] } }),
+    ).toEqual([]);
+    expect(
+      withoutAiSecret({
+        api: {
+          bindings: settings.bindings.filter(
+            (b) => b.name !== "AI_BRIDGE_SECRET",
+          ),
+        },
+        bridge: { bindings: [] },
+      }),
+    ).toEqual(["saldo-api", "saldo-ai-bridge"]);
+    // A plain variable of that name is not the secret.
+    expect(
+      withoutAiSecret({
+        api: { bindings: [{ name: "AI_BRIDGE_SECRET", type: "plain_text" }] },
+        bridge: { bindings: [secret] },
+      }),
+    ).toEqual(["saldo-api"]);
   });
   it("detects secret name, owner, and namespace loss after deployment", () => {
     assertPreserved(settings, settings);
@@ -527,5 +573,10 @@ describe("idempotent releases", () => {
     );
     expect(laterFailure.ok).toBe(false);
     expect(laterFailure.text).toContain("deployed, but a later check failed");
+    const reapplied = state("unchanged", "unchanged", "unchanged")!;
+    reapplied.components.web.endpointsReapplied = true;
+    expect(summarize(reapplied).text).toContain(
+      "| saldo-web | unchanged (private endpoints re-applied) | - |",
+    );
   });
 });

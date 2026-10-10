@@ -28,6 +28,9 @@ let temp: string;
 let log: string;
 let active: { version: string; tag?: string; message?: string } | undefined;
 let afterDeploy: typeof active;
+const closed = { enabled: false, previews_enabled: false };
+let endpoints: Record<string, boolean>;
+let endpointsAfterCf: Record<string, boolean>;
 
 function state(): ReleaseState {
   return JSON.parse(readFileSync(join(temp, "saldo-release.json"), "utf8"));
@@ -67,10 +70,17 @@ require('node:fs').appendFileSync(process.env.SALDO_TEST_CF_LOG, JSON.stringify(
   vi.stubEnv("PATH", `${temp}${delimiter}${process.env.PATH ?? ""}`);
   active = { version: "v-old", tag: "older", message: "saldo-content old" };
   afterDeploy = undefined;
+  endpoints = closed;
+  endpointsAfterCf = closed;
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string) => {
       const current = cfCalls().length ? afterDeploy : active;
+      if (url.endsWith("/subdomain"))
+        return Response.json({
+          success: true,
+          result: cfCalls().length ? endpointsAfterCf : endpoints,
+        });
       if (url.endsWith("/deployments"))
         return Response.json({
           success: true,
@@ -170,6 +180,64 @@ describe("deploying one Worker", () => {
       "saldo-api is not serving the uploaded version",
     );
     expect(state().components.api.outcome).toBe("failed");
+  });
+
+  it("turns workers.dev and Preview URLs off again for an unchanged Worker, without a new version", async () => {
+    // A previous run activated this version, then failed on the endpoints.
+    active = {
+      version: "v-same",
+      tag: "older",
+      message: contentMessage("3".repeat(64)),
+    };
+    afterDeploy = active;
+    endpoints = { enabled: true, previews_enabled: false };
+    await deploy("web");
+    expect(cfCalls()).toEqual([
+      [
+        "exec",
+        "cf",
+        "workers",
+        "triggers",
+        "deploy",
+        "--prebuilt",
+        "--mode",
+        "production",
+        "--quiet",
+      ],
+    ]);
+    expect(state().components.web).toMatchObject({
+      outcome: "unchanged",
+      version: "v-same",
+      endpointsReapplied: true,
+    });
+  });
+
+  it("fails when workers.dev or Preview URLs stay on", async () => {
+    active = {
+      version: "v-same",
+      tag: "older",
+      message: contentMessage("2".repeat(64)),
+    };
+    afterDeploy = active;
+    endpoints = endpointsAfterCf = { enabled: false, previews_enabled: true };
+    await expect(deploy("api")).rejects.toThrow(
+      "saldo-api still has workers.dev or Preview URLs enabled",
+    );
+    expect(state().components.api.outcome).toBe("failed");
+  });
+
+  it("fails a new deploy whose endpoints are not private afterwards", async () => {
+    afterDeploy = {
+      version: "v-new",
+      tag,
+      message: contentMessage("1".repeat(64)),
+    };
+    endpointsAfterCf = { enabled: true, previews_enabled: true };
+    await expect(deploy("bridge")).rejects.toThrow(
+      "saldo-ai-bridge still has workers.dev or Preview URLs enabled",
+    );
+    expect(cfCalls()[0][2]).toBe("deploy");
+    expect(state().components.bridge.outcome).toBe("failed");
   });
 
   it("deploys a Worker that does not exist yet", async () => {
